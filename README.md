@@ -15,13 +15,13 @@ With `wrangler`, you can build, test, and deploy your Worker with the following 
 
 ```bash
 # compiles your project to WebAssembly and will warn of any issues
-wrangler build 
+npx wrangler build 
 
 # run your Worker in an ideal development workflow (with a local server, file watcher & more)
-wrangler dev
+npx wrangler dev
 
 # deploy your Worker globally to the Cloudflare network (update your wrangler.toml file for configuration)
-wrangler publish
+npx wrangler publish
 ```
 
 Read the latest `worker` crate documentation here: https://docs.rs/worker
