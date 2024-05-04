@@ -1,6 +1,11 @@
+//! Helper utilities.
+
 use riven::RiotApi;
+use web_sys::console;
 use worker::{console_error, console_log, Env};
 
+/// Initialize [`log`] logging into Cloudflare's [`console`] logging system, if not already
+/// initialized.
 pub fn init_logging() {
     use std::sync::Once;
     static ONCE: Once = Once::new();
@@ -21,7 +26,6 @@ pub fn init_logging() {
                 }
 
                 fn log(&self, record: &log::Record) {
-                    use web_sys::console;
                     let method = match record.level() {
                         log::Level::Error => console::error_1,
                         log::Level::Warn => console::warn_1,
@@ -50,6 +54,7 @@ pub fn init_logging() {
     });
 }
 
+/// Initialize and return the [`RiotApi`] instance, if not already initialized.
 pub fn get_rgapi(env: &Env) -> &'static RiotApi {
     use std::sync::OnceLock;
     static ONCE: OnceLock<RiotApi> = OnceLock::new();
