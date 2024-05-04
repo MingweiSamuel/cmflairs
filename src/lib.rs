@@ -26,8 +26,12 @@ pub async fn fetch(_req: Request, env: Env, _ctx: Context) -> Result<Response> {
     util::init_logging();
 
     let d1db = env.d1("BINDING_D1_DB").unwrap();
-    let query = query!(&d1db, "SELECT * FROM user",)?;
-    let response: Vec<db::User> = query.all().await?.results()?;
 
-    Response::ok(format!("{:#?}", response))
+    let query = query!(&d1db, "SELECT * FROM user",)?;
+    let response1: Vec<db::User> = query.all().await?.results()?;
+
+    let query = query!(&d1db, "SELECT * FROM summoner",)?;
+    let response2: Vec<db::Summoner> = query.all().await?.results()?;
+
+    Response::ok(format!("{:#?}", (response1, response2)))
 }
