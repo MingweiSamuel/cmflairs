@@ -24,6 +24,9 @@ pub struct User {
 pub struct Summoner {
     /// PK ID.
     pub id: u64,
+    /// FK [`User::id`].
+    pub user_id: u64,
+
     /// Riot PUUID (player universally unique ID).
     pub puuid: String,
     /// Riot ID game username (`game_name#tag_line`).
