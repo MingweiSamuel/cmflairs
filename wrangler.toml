@@ -1,10 +1,12 @@
+# read more about configuring your Worker via wrangler.toml at:
+# https://developers.cloudflare.com/workers/cli-wrangler/configuration
+
 name = "cmflairs"
 workers_dev = true
 compatibility_date = "2022-01-20"
 main = "build/worker/shim.mjs"
 
 [vars]
-WORKERS_RS_VERSION = "0.0.9"
 
 [build]
 command = "cargo install -q worker-build && worker-build --release" # required
@@ -14,5 +16,21 @@ globs = ["**/*.wasm"]
 type = "CompiledWasm"
 fallthrough = false
 
-# read more about configuring your Worker via wrangler.toml at:
-# https://developers.cloudflare.com/workers/cli-wrangler/configuration
+[[queues.consumers]]
+queue = "dev-webjob"
+# Only allow one consumer, to prevent RGAPI rate limit fighting.
+max_concurrency = 1
+# The maximum number of messages allowed in each batch.
+max_batch_size = 10
+# The maximum number of seconds to wait for messages to fill a batch before the batch is sent to
+# the consumer Worker.
+max_batch_timeout = 5
+
+[[queues.producers]]
+binding = "BINDING_QUEUE_WEBJOB"
+queue = "dev-webjob"
+
+[[d1_databases]]
+binding = "BINDING_D1_DB"
+database_name = "dev-db"
+database_id = "dfb00107-a9c5-4802-a6de-d035d6b793b9"
