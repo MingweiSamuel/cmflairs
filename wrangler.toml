@@ -4,12 +4,13 @@
 name = "cmflairs"
 workers_dev = true
 compatibility_date = "2022-01-20"
-main = "build/worker/shim.mjs"
+main = "cm_worker/build/worker/shim.mjs"
 
 [vars]
 
 [build]
 command = "cargo install -q worker-build && worker-build --release" # required
+cwd = "cm_worker"
 
 [[rules]]
 globs = ["**/*.wasm"]

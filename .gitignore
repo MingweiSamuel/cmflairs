@@ -1,5 +1,5 @@
 /.wrangler/
-/build/
 /node_modules/
 /target/
 /.dev.vars
+/cm_worker/build/
