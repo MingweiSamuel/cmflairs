@@ -1,9 +1,9 @@
 [workspace]
-
-# See "Adding new crates" and "Moving crates" addendum sections in `RELEASING.md`
 members = [
     "cm_worker",
-    "cm_macro",
 ]
-
 resolver = "2"
+
+[profile.release]
+# Tell `rustc` to optimize for small code size.
+opt-level = "s"

@@ -27,6 +27,8 @@ max_batch_size = 10
 # The maximum number of seconds to wait for messages to fill a batch before the batch is sent to
 # the consumer Worker.
 max_batch_timeout = 5
+# The maximum number of retries for a message, if it fails or `retryAll()` is invoked.
+max_retries = 0
 
 [[queues.producers]]
 binding = "BINDING_QUEUE_WEBJOB"
@@ -35,4 +37,4 @@ queue = "dev-webjob"
 [[d1_databases]]
 binding = "BINDING_D1_DB"
 database_name = "dev-db"
-database_id = "7b1609f5-3ac3-4451-a19a-3f35e4d41918"
+database_id = "98379864-1ac6-43c9-8e58-bf486da77a8f"

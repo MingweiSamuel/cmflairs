@@ -1,11 +1,17 @@
 //! Background "webjob" task handling.
 
+use riven::consts::PlatformRoute;
 use riven::models::champion_mastery_v4::ChampionMastery;
 use riven::RiotApi;
+use serde_with::de::DeserializeAsWrap;
+use serde_with::json::JsonString;
+use serde_with::ser::SerializeAsWrap;
+use serde_with::{DisplayFromStr, Same, TimestampMilliSeconds};
 use web_time::SystemTime;
 use worker::{query, D1Database, Error, Message, Result};
 
-use crate::db;
+use crate::with::{IgnoreKeys, WebSystemTime};
+use crate::ChampScore;
 
 /// Enum of the possible tasks for the RiotApi web job.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -24,28 +30,41 @@ pub async fn handle(db: D1Database, rgapi: &RiotApi, msg: Message<Task>) -> Resu
     }
 }
 
+type Wrap<T, U> = DeserializeAsWrap<T, IgnoreKeys<U>>;
+
 /// Handle [`Task::UpdateSummoner`].
 pub async fn update_summoner(db: D1Database, rgapi: &RiotApi, summoner_id: u64) -> Result<()> {
-    let query = query!(&db, "SELECT * FROM summoner WHERE id = ?1", summoner_id)?;
-    let db_summoner: db::Summoner = query.first(None).await?.ok_or_else(|| {
-        Error::RustError(format!(
-            "Failed to find summoner with PK ID: {}",
-            summoner_id
-        ))
-    })?;
+    type SummonerValus = (String, PlatformRoute);
+    type SummonerSerde = (Same, DisplayFromStr);
+    let query = query!(
+        &db,
+        "SELECT puuid, platform FROM summoner WHERE id = ?",
+        summoner_id,
+    )?;
+    let (puuid, platform) = query
+        .first(None)
+        .await?
+        .map(<Wrap<SummonerValus, SummonerSerde>>::into_inner)
+        .ok_or_else(|| {
+            Error::RustError(format!(
+                "Failed to find summoner with PK ID: {}",
+                summoner_id
+            ))
+        })?;
 
-    // TODO(mingwei): handle chaning riot IDs.
+    // TODO(mingwei): handle chaning riot IDs `username#tagline`.
+
     let champion_masteries = rgapi
         .champion_mastery_v4()
-        .get_all_champion_masteries_by_puuid(db_summoner.platform, &db_summoner.puuid)
+        .get_all_champion_masteries_by_puuid(platform, &puuid)
         .await
         .map_err(|e| {
             Error::RustError(format!(
                 "Failed to get summoner with PUUID {}: {}",
-                db_summoner.puuid, e
+                puuid, e
             ))
         })?;
-    let champion_masteries = champion_masteries
+    let champ_scores = champion_masteries
         .into_iter()
         .map(
             |ChampionMastery {
@@ -53,27 +72,25 @@ pub async fn update_summoner(db: D1Database, rgapi: &RiotApi, summoner_id: u64) 
                  champion_points,
                  champion_level,
                  ..
-             }| db::ChampionMastery {
+             }| ChampScore {
                 champion: champion_id,
                 points: champion_points,
                 level: champion_level,
             },
         )
         .collect::<Vec<_>>();
-    if db_summoner.champion_masteries.as_ref() != Some(&champion_masteries) {
-        let query = query!(
-            &db,
-            "UPDATE ?4 SET
-                champion_masteries = ?2,
-                last_update = ?3
-            WHERE id = ?1",
-            db_summoner.id,
-            serde_json::to_string(&champion_masteries).unwrap(),
-            SystemTime::UNIX_EPOCH.elapsed().unwrap().as_millis() as u64,
-            "summoner",
-        )?;
-        query.run().await?;
-    }
+
+    let query = query!(
+        &db,
+        "UPDATE summoner SET
+            champ_scores = ?,
+            last_update = ?
+        WHERE id = ?",
+        <SerializeAsWrap<_, JsonString>>::new(&champ_scores),
+        <SerializeAsWrap<_, WebSystemTime<TimestampMilliSeconds<i64>>>>::new(&SystemTime::now()),
+        summoner_id,
+    )?;
+    query.run().await?;
 
     Ok(())
 }

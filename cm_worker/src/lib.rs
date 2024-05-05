@@ -3,20 +3,22 @@
 //! Cloudflare worker.
 
 use futures::future::join_all;
-use ignore_keys::IgnoreKeys;
 use riven::consts::{Champion, PlatformRoute, RegionalRoute};
 use serde_with::de::DeserializeAsWrap;
-use serde_with::{DeserializeAs, Same};
+use serde_with::json::JsonString;
+use serde_with::{BoolFromInt, DisplayFromStr, Same, TimestampMilliSeconds};
 use util::get_rgapi;
+use web_time::SystemTime;
+use with::IgnoreKeys;
 use worker::{
-    event, query, Context, D1Argument, D1Database, D1PreparedStatement, Env, Error, MessageBatch,
-    MessageExt, Request, Response, Result,
+    event, query, Context, Env, Error, MessageBatch, MessageExt, Request, Response, Result,
 };
 
-pub mod db;
-pub mod ignore_keys;
+use crate::with::WebSystemTime;
+
 pub mod util;
 pub mod webjob;
+pub mod with;
 
 /// Local region.
 pub const ROUTE: RegionalRoute = RegionalRoute::AMERICAS;
@@ -59,75 +61,68 @@ pub async fn fetch(_req: Request, env: Env, _ctx: Context) -> Result<Response> {
 
     let db = env.d1("BINDING_D1_DB").unwrap();
 
-    let query = query!(&db, "SELECT * FROM user");
-    let mut response1: Vec<db::User> = query.all().await?.results()?;
+    type UserWrap = DeserializeAsWrap<
+        (u64, String, bool, Option<u64>),
+        IgnoreKeys<(Same, Same, BoolFromInt, Same)>,
+    >;
+    let query = query!(
+        &db,
+        "SELECT id, reddit_user_name, profile_is_public, profile_bgskinid FROM user"
+    );
+    let response1 = query
+        .all()
+        .await?
+        .results()?
+        .into_iter()
+        .map(UserWrap::into_inner)
+        .collect::<Vec<_>>();
 
-    for user in response1.iter_mut() {
-        let query = query!(&db, "SELECT * FROM summoner WHERE user_id = ?1", user.id)?;
-        user.summoners = Some(query.all().await?.results()?);
+    let mut summoners = Vec::new();
+    for &(id, ..) in response1.iter() {
+        type SummonerWrap = DeserializeAsWrap<
+            (
+                u64,
+                u64,
+                String,
+                PlatformRoute,
+                String,
+                String,
+                Option<SystemTime>,
+                Option<Vec<ChampScore>>,
+            ),
+            IgnoreKeys<(
+                Same,
+                Same,
+                Same,
+                DisplayFromStr,
+                Same,
+                Same,
+                Option<WebSystemTime<TimestampMilliSeconds<i64>>>,
+                Option<JsonString>,
+            )>,
+        >;
+        let query = query!(&db, "SELECT id, user_id, puuid, platform, game_name, tag_line, last_update, champ_scores FROM summoner WHERE user_id = ?1", id)?;
+        summoners.push(
+            query
+                .all()
+                .await?
+                .results()?
+                .into_iter()
+                .map(SummonerWrap::into_inner)
+                .collect::<Vec<_>>(),
+        );
     }
 
-    let query = query!(&db, "SELECT id, platform FROM summoner WHERE id = 1");
-
-    type X =
-        DeserializeAsWrap<(u64, PlatformRoute), IgnoreKeys<(Same, serde_with::DisplayFromStr)>>;
-    let (pk, platform) = query
-        .first::<X>(None)
-        .await?
-        .ok_or_else(|| Error::RustError(format!("Failed to find summoner with PK ID: 1")))?
-        .into_inner();
-
-    Response::ok(format!("{:#?}\n\n{:#?}", response1, (pk, platform)))
+    Response::ok(format!("{:#?}\n\n{:#?}", response1, summoners))
 }
 
-// pub trait Table {
-//     /// The name of the table.
-//     const TABLE: &'static str;
-//     /// The name of the key field.
-//     const KEY: &'static str;
-//     /// The name of all non-key fields.
-//     const FIELDS: &'static [&'static str];
-
-//     fn key(&self) -> wasm_bindgen::JsValue;
-
-//     fn fields(&self, fields: &[&str]) -> Vec<wasm_bindgen::JsValue>;
-
-//     fn update(&self, db: &D1Database, fields: &[&str]) -> D1PreparedStatement {
-//         let mut fields_and_key = self.fields(fields);
-//         fields_and_key.push(self.key());
-//         update_query(db, Self::TABLE, fields, Self::KEY)
-//             .bind(&*fields_and_key)
-//             .unwrap()
-//     }
-//     // fn update_batch(items: &[&Self], db: &D1Database, fields: &[&str]) -> Vec<D1PreparedStatement> {
-//     //     let prepared_statement = update_query(db, Self::TABLE, fields, Self::KEY);
-//     //     items
-//     //         .iter()
-//     //         .map(|this| {
-//     //             let mut fields_and_key = this.fields(fields);
-//     //             fields_and_key.push(this.key());
-//     //             prepared_statement.bind(&*fields_and_key).unwrap()
-//     //         })
-//     //         .collect()
-//     // }
-// }
-
-// fn update_query(db: &D1Database, table: &str, fields: &[&str], key: &str) -> D1PreparedStatement {
-//     assert_ne!(0, fields.len());
-
-//     use std::fmt::Write;
-
-//     let mut query = String::new();
-//     writeln!(&mut query, "UPDATE {} SET", table).unwrap();
-
-//     let mut iter = fields.iter().peekable();
-//     while let Some(&field) = iter.next() {
-//         write!(&mut query, "    {} = ?", field).unwrap();
-//         if iter.peek().is_some() {
-//             writeln!(&mut query, ",").unwrap();
-//         }
-//     }
-//     writeln!(&mut query, "WHERE {} = ?", key).unwrap();
-
-//     db.prepare(query)
-// }
+/// Per-champion mastery info.
+#[derive(Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ChampScore {
+    /// Which champion.
+    pub champion: Champion,
+    /// How many mastery points earned.
+    pub points: i32,
+    /// What level (up to 7).
+    pub level: i32,
+}
