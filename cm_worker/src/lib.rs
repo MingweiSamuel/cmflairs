@@ -3,13 +3,18 @@
 //! Cloudflare worker.
 
 use futures::future::join_all;
-use riven::consts::RegionalRoute;
+use ignore_keys::IgnoreKeys;
+use riven::consts::{Champion, PlatformRoute, RegionalRoute};
+use serde_with::de::DeserializeAsWrap;
+use serde_with::{DeserializeAs, Same};
 use util::get_rgapi;
 use worker::{
-    event, query, Context, Env, Error, MessageBatch, MessageExt, Request, Response, Result,
+    event, query, Context, D1Argument, D1Database, D1PreparedStatement, Env, Error, MessageBatch,
+    MessageExt, Request, Response, Result,
 };
 
 pub mod db;
+pub mod ignore_keys;
 pub mod util;
 pub mod webjob;
 
@@ -52,15 +57,77 @@ pub async fn fetch(_req: Request, env: Env, _ctx: Context) -> Result<Response> {
     let queue = env.queue("BINDING_QUEUE_WEBJOB").unwrap();
     queue.send(webjob::Task::UpdateSummoner(1)).await?;
 
-    let d1db = env.d1("BINDING_D1_DB").unwrap();
+    let db = env.d1("BINDING_D1_DB").unwrap();
 
-    let query = query!(&d1db, "SELECT * FROM user");
+    let query = query!(&db, "SELECT * FROM user");
     let mut response1: Vec<db::User> = query.all().await?.results()?;
 
     for user in response1.iter_mut() {
-        let query = query!(&d1db, "SELECT * FROM summoner WHERE user_id = ?1", user.id)?;
+        let query = query!(&db, "SELECT * FROM summoner WHERE user_id = ?1", user.id)?;
         user.summoners = Some(query.all().await?.results()?);
     }
 
-    Response::ok(format!("{:#?}", response1))
+    let query = query!(&db, "SELECT id, platform FROM summoner WHERE id = 1");
+
+    type X =
+        DeserializeAsWrap<(u64, PlatformRoute), IgnoreKeys<(Same, serde_with::DisplayFromStr)>>;
+    let (pk, platform) = query
+        .first::<X>(None)
+        .await?
+        .ok_or_else(|| Error::RustError(format!("Failed to find summoner with PK ID: 1")))?
+        .into_inner();
+
+    Response::ok(format!("{:#?}\n\n{:#?}", response1, (pk, platform)))
 }
+
+// pub trait Table {
+//     /// The name of the table.
+//     const TABLE: &'static str;
+//     /// The name of the key field.
+//     const KEY: &'static str;
+//     /// The name of all non-key fields.
+//     const FIELDS: &'static [&'static str];
+
+//     fn key(&self) -> wasm_bindgen::JsValue;
+
+//     fn fields(&self, fields: &[&str]) -> Vec<wasm_bindgen::JsValue>;
+
+//     fn update(&self, db: &D1Database, fields: &[&str]) -> D1PreparedStatement {
+//         let mut fields_and_key = self.fields(fields);
+//         fields_and_key.push(self.key());
+//         update_query(db, Self::TABLE, fields, Self::KEY)
+//             .bind(&*fields_and_key)
+//             .unwrap()
+//     }
+//     // fn update_batch(items: &[&Self], db: &D1Database, fields: &[&str]) -> Vec<D1PreparedStatement> {
+//     //     let prepared_statement = update_query(db, Self::TABLE, fields, Self::KEY);
+//     //     items
+//     //         .iter()
+//     //         .map(|this| {
+//     //             let mut fields_and_key = this.fields(fields);
+//     //             fields_and_key.push(this.key());
+//     //             prepared_statement.bind(&*fields_and_key).unwrap()
+//     //         })
+//     //         .collect()
+//     // }
+// }
+
+// fn update_query(db: &D1Database, table: &str, fields: &[&str], key: &str) -> D1PreparedStatement {
+//     assert_ne!(0, fields.len());
+
+//     use std::fmt::Write;
+
+//     let mut query = String::new();
+//     writeln!(&mut query, "UPDATE {} SET", table).unwrap();
+
+//     let mut iter = fields.iter().peekable();
+//     while let Some(&field) = iter.next() {
+//         write!(&mut query, "    {} = ?", field).unwrap();
+//         if iter.peek().is_some() {
+//             writeln!(&mut query, ",").unwrap();
+//         }
+//     }
+//     writeln!(&mut query, "WHERE {} = ?", key).unwrap();
+
+//     db.prepare(query)
+// }

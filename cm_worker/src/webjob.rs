@@ -1,9 +1,8 @@
 //! Background "webjob" task handling.
 
-use std::time::SystemTime;
-
 use riven::models::champion_mastery_v4::ChampionMastery;
 use riven::RiotApi;
+use web_time::SystemTime;
 use worker::{query, D1Database, Error, Message, Result};
 
 use crate::db;
@@ -64,13 +63,14 @@ pub async fn update_summoner(db: D1Database, rgapi: &RiotApi, summoner_id: u64) 
     if db_summoner.champion_masteries.as_ref() != Some(&champion_masteries) {
         let query = query!(
             &db,
-            "UPDATE summoner SET
+            "UPDATE ?4 SET
                 champion_masteries = ?2,
-                last_update = ?3,
+                last_update = ?3
             WHERE id = ?1",
             db_summoner.id,
             serde_json::to_string(&champion_masteries).unwrap(),
-            SystemTime::now(),
+            SystemTime::UNIX_EPOCH.elapsed().unwrap().as_millis() as u64,
+            "summoner",
         )?;
         query.run().await?;
     }

@@ -11,6 +11,7 @@ main = "cm_worker/build/worker/shim.mjs"
 [build]
 command = "cargo install -q worker-build && worker-build --release" # required
 cwd = "cm_worker"
+watch_dir = "cm_worker/src"
 
 [[rules]]
 globs = ["**/*.wasm"]

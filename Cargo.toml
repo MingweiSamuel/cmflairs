@@ -3,6 +3,7 @@
 # See "Adding new crates" and "Moving crates" addendum sections in `RELEASING.md`
 members = [
     "cm_worker",
+    "cm_macro",
 ]
 
 resolver = "2"
