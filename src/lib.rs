@@ -2,22 +2,46 @@
 
 //! Cloudflare worker.
 
-use worker::{event, query, Context, Env, MessageBatch, Request, Response, Result};
+use futures::future::join_all;
+use riven::consts::RegionalRoute;
+use util::get_rgapi;
+use worker::{
+    event, query, Context, Env, Error, MessageBatch, MessageExt, Request, Response, Result,
+};
 
 pub mod db;
 pub mod util;
+pub mod webjob;
+
+/// Local region.
+pub const ROUTE: RegionalRoute = RegionalRoute::AMERICAS;
 
 /// Cloudflare queue handler.
 #[event(queue)]
-pub async fn queue(message_batch: MessageBatch<String>, _env: Env, _ctx: Context) -> Result<()> {
+pub async fn queue(
+    message_batch: MessageBatch<webjob::Task>,
+    env: Env,
+    _ctx: Context,
+) -> Result<()> {
     util::init_logging();
 
-    for message in message_batch.messages()? {
-        let message = message.into_body();
-        log::info!("Received webjob message: {}", message,);
-    }
+    let rgapi = get_rgapi(&env);
 
-    Ok(())
+    let futures = message_batch.messages()?.into_iter().map(|msg| {
+        log::info!("Handling webjob task: {:?}", msg.body());
+        let db = env.d1("BINDING_D1_DB").unwrap();
+        webjob::handle(db, rgapi, msg)
+    });
+    let results = join_all(futures).await;
+    let errors = results
+        .into_iter()
+        .filter_map(|result| result.map(|msg| msg.ack()).err())
+        .collect::<Vec<_>>();
+
+    errors
+        .is_empty()
+        .then_some(())
+        .ok_or(Error::RustError(format!("{:?}", errors)))
 }
 
 /// Cloudflare fetch request handler.
@@ -25,13 +49,18 @@ pub async fn queue(message_batch: MessageBatch<String>, _env: Env, _ctx: Context
 pub async fn fetch(_req: Request, env: Env, _ctx: Context) -> Result<Response> {
     util::init_logging();
 
+    let queue = env.queue("BINDING_QUEUE_WEBJOB").unwrap();
+    queue.send(webjob::Task::UpdateSummoner(1)).await?;
+
     let d1db = env.d1("BINDING_D1_DB").unwrap();
 
-    let query = query!(&d1db, "SELECT * FROM user",)?;
-    let response1: Vec<db::User> = query.all().await?.results()?;
+    let query = query!(&d1db, "SELECT * FROM user");
+    let mut response1: Vec<db::User> = query.all().await?.results()?;
 
-    let query = query!(&d1db, "SELECT * FROM summoner",)?;
-    let response2: Vec<db::Summoner> = query.all().await?.results()?;
+    for user in response1.iter_mut() {
+        let query = query!(&d1db, "SELECT * FROM summoner WHERE user_id = ?1", user.id)?;
+        user.summoners = Some(query.all().await?.results()?);
+    }
 
-    Response::ok(format!("{:#?}", (response1, response2)))
+    Response::ok(format!("{:#?}", response1))
 }
