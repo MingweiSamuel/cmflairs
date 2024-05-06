@@ -99,10 +99,10 @@ pub fn get_rso_oauth_client(env: &Env) -> Result<&'static OauthClient> {
     ONCE.get_or_init(|| {
         let client = OauthClient {
             client_id: envvar(env, "RSO_CLIENT_ID")?,
-            client_secret: secret(env, "RSO_CLIENT_ID")?,
+            client_secret: secret(env, "RSO_CLIENT_SECRET")?,
             provider_authorize_url: envvar(env, "RSO_PROVIDER_AUTHORIZE_URL")?,
             provider_token_url: envvar(env, "RSO_PROVIDER_TOKEN_URL")?,
-            callback_url: envvar(env, "RSO_PROVIDER_TOKEN_URL")?,
+            callback_url: envvar(env, "RSO_CALLBACK_URL")?,
         };
         log::info!("Initializing RSO oauth client: {:#?}", client);
         Ok(client)
@@ -117,10 +117,10 @@ pub fn get_reddit_oauth_client(env: &Env) -> Result<&'static OauthClient> {
     ONCE.get_or_init(|| {
         let client = OauthClient {
             client_id: envvar(env, "REDDIT_CLIENT_ID")?,
-            client_secret: secret(env, "REDDIT_CLIENT_ID")?,
+            client_secret: secret(env, "REDDIT_CLIENT_SECRET")?,
             provider_authorize_url: envvar(env, "REDDIT_PROVIDER_AUTHORIZE_URL")?,
             provider_token_url: envvar(env, "REDDIT_PROVIDER_TOKEN_URL")?,
-            callback_url: envvar(env, "REDDIT_PROVIDER_TOKEN_URL")?,
+            callback_url: envvar(env, "REDDIT_CALLBACK_URL")?,
         };
         log::info!("Initializing Reddit oauth client: {:#?}", client);
         Ok(client)

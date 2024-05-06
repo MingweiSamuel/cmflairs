@@ -2,22 +2,20 @@
 
 //! Cloudflare worker.
 
-use auth::{OauthCallbackQueryResponse, OauthTokenRequest, OauthTokenResponse};
 use futures::future::join_all;
 use riven::consts::{Champion, PlatformRoute, RegionalRoute};
 use secrecy::ExposeSecret;
 use serde_with::de::DeserializeAsWrap;
 use serde_with::json::JsonString;
-use serde_with::{serde_as, BoolFromInt, DisplayFromStr, Same, TimestampMilliSeconds};
+use serde_with::{BoolFromInt, DisplayFromStr, Same, TimestampMilliSeconds};
 use url::Url;
 use util::{envvar, get_reddit_oauth_client, get_rso_oauth_client, secret};
-use web_time::{Duration, SystemTime};
+use web_time::SystemTime;
 use worker::{
     event, query, Context, Env, Error, MessageBatch, MessageExt, Request, Response, Result,
     RouteContext, Router,
 };
 
-use crate::util::get_reqwest_client;
 use crate::with::{IgnoreKeys, WebSystemTime};
 
 pub mod auth;
@@ -109,16 +107,16 @@ pub async fn index_get(_req: Request, ctx: RouteContext<()>) -> Result<Response>
 /// `GET /signin-reddit`
 pub async fn signin_reddit_get(req: Request, ctx: RouteContext<()>) -> Result<Response> {
     let tokens = get_reddit_oauth_client(&ctx.env)?
-        .handle_callback(req, ctx)
-        .await;
+        .handle_callback(req, &ctx)
+        .await?;
     Response::from_html(format!("<code>{:#?}</code>", tokens))
 }
 
 /// `GET /signin-rso`
 pub async fn signin_rso_get(req: Request, ctx: RouteContext<()>) -> Result<Response> {
     let tokens = get_rso_oauth_client(&ctx.env)?
-        .handle_callback(req, ctx)
-        .await;
+        .handle_callback(req, &ctx)
+        .await?;
     Response::from_html(format!("<code>{:#?}</code>", tokens))
 }
 
