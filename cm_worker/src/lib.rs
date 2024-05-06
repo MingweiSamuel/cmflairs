@@ -4,12 +4,10 @@
 
 use futures::future::join_all;
 use riven::consts::{Champion, PlatformRoute, RegionalRoute};
-use secrecy::ExposeSecret;
 use serde_with::de::DeserializeAsWrap;
 use serde_with::json::JsonString;
 use serde_with::{BoolFromInt, DisplayFromStr, Same, TimestampMilliSeconds};
-use url::Url;
-use util::{envvar, get_reddit_oauth_client, get_rso_oauth_client, secret};
+use util::{get_reddit_oauth_client, get_rso_oauth_client};
 use web_time::SystemTime;
 use worker::{
     event, query, Context, Env, Error, MessageBatch, MessageExt, Request, Response, Result,
@@ -59,7 +57,13 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
 
     let router = Router::new();
     router
-        .get_async("/", index_get)
+        .get("/", index_get)
+        .get("/login-reddit", |_, ctx| {
+            Response::redirect(get_reddit_oauth_client(&ctx.env)?.make_login_link("foobar"))
+        })
+        .get("/login-rso", |_, ctx| {
+            Response::redirect(get_rso_oauth_client(&ctx.env)?.make_login_link("foobar"))
+        })
         .get_async("/signin-reddit", signin_reddit_get)
         .get_async("/signin-rso", signin_rso_get)
         .get_async("/test", test_get)
@@ -68,40 +72,10 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
 }
 
 /// `GET /`
-pub async fn index_get(_req: Request, ctx: RouteContext<()>) -> Result<Response> {
-    let rso_url = Url::parse_with_params(
-        &envvar(&ctx.env, "RSO_PROVIDER_AUTHORIZE_URL")?,
-        [
-            ("response_type", "code"),
-            ("scope", "openid cpid offline_access"),
-            ("redirect_uri", &envvar(&ctx.env, "RSO_CALLBACK_URL")?),
-            (
-                "client_id",
-                secret(&ctx.env, "RSO_CLIENT_ID")?.expose_secret(),
-            ),
-        ],
+pub fn index_get(_req: Request, _ctx: RouteContext<()>) -> Result<Response> {
+    Response::from_html(
+        "<a href=\"/login-rso\">RSO Sign In</a><br><a href=\"/login-reddit\">Reddit Sign In</a>",
     )
-    .unwrap();
-    let reddit_url = Url::parse_with_params(
-        &envvar(&ctx.env, "REDDIT_PROVIDER_AUTHORIZE_URL")?,
-        [
-            ("response_type", "code"),
-            ("scope", "identity"),
-            ("redirect_uri", &envvar(&ctx.env, "REDDIT_CALLBACK_URL")?),
-            (
-                "client_id",
-                secret(&ctx.env, "REDDIT_CLIENT_ID")?.expose_secret(),
-            ),
-            ("duration", "temporary"),
-            ("state", "asdf"),
-        ],
-    )
-    .unwrap();
-
-    Response::from_html(format!(
-        "<a href=\"{}\">RSO Sign In</a><br><a href=\"{}\">Reddit Sign In</a>",
-        rso_url, reddit_url
-    ))
 }
 
 /// `GET /signin-reddit`
