@@ -7,7 +7,6 @@ use riven::consts::{Champion, PlatformRoute, RegionalRoute};
 use serde_with::de::DeserializeAsWrap;
 use serde_with::json::JsonString;
 use serde_with::{BoolFromInt, DisplayFromStr, Same, TimestampMilliSeconds};
-use util::get_rgapi;
 use web_time::SystemTime;
 use with::IgnoreKeys;
 use worker::{
@@ -32,12 +31,9 @@ pub async fn queue(
 ) -> Result<()> {
     util::init_logging();
 
-    let rgapi = get_rgapi(&env);
-
     let futures = message_batch.messages()?.into_iter().map(|msg| {
-        log::info!("Handling webjob task: {:?}", msg.body());
-        let db = env.d1("BINDING_D1_DB").unwrap();
-        webjob::handle(db, rgapi, msg)
+        log::info!("Handling webjob task: `{:?}`.", msg.body());
+        webjob::handle(&env, msg)
     });
     let results = join_all(futures).await;
     let errors = results
@@ -45,6 +41,7 @@ pub async fn queue(
         .filter_map(|result| result.map(|msg| msg.ack()).err())
         .collect::<Vec<_>>();
 
+    log::info!("Handling webjob task complete. Errors: {:?}", errors);
     errors
         .is_empty()
         .then_some(())
@@ -57,7 +54,7 @@ pub async fn fetch(_req: Request, env: Env, _ctx: Context) -> Result<Response> {
     util::init_logging();
 
     let queue = env.queue("BINDING_QUEUE_WEBJOB").unwrap();
-    queue.send(webjob::Task::UpdateSummoner(1)).await?;
+    queue.send(webjob::Task::SummonerBulkUpdate).await?;
 
     let db = env.d1("BINDING_D1_DB").unwrap();
 

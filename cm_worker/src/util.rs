@@ -64,3 +64,12 @@ pub fn get_rgapi(env: &Env) -> &'static RiotApi {
         rgapi
     })
 }
+
+/// Get the bulk update batch size.
+pub fn get_bulk_update_batch_size(env: &Env) -> u32 {
+    env.var("WEBJOB_BULK_UPDATE_BATCH_SIZE")
+        .unwrap()
+        .to_string()
+        .parse()
+        .unwrap()
+}
