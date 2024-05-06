@@ -2,23 +2,25 @@
 
 //! Cloudflare worker.
 
+use auth::{OauthCallbackQueryResponse, OauthTokenRequest, OauthTokenResponse};
 use futures::future::join_all;
 use riven::consts::{Champion, PlatformRoute, RegionalRoute};
+use secrecy::ExposeSecret;
 use serde_with::de::DeserializeAsWrap;
 use serde_with::json::JsonString;
 use serde_with::{serde_as, BoolFromInt, DisplayFromStr, Same, TimestampMilliSeconds};
 use url::Url;
-use util::{get_rso_callback_url, get_rso_client_id};
+use util::{envvar, get_reddit_oauth_client, get_rso_oauth_client, secret};
 use web_time::{Duration, SystemTime};
-use with::IgnoreKeys;
 use worker::{
     event, query, Context, Env, Error, MessageBatch, MessageExt, Request, Response, Result,
     RouteContext, Router,
 };
 
-use crate::util::{get_client, get_rso_client_secret};
-use crate::with::WebSystemTime;
+use crate::util::get_reqwest_client;
+use crate::with::{IgnoreKeys, WebSystemTime};
 
+pub mod auth;
 pub mod util;
 pub mod webjob;
 pub mod with;
@@ -60,7 +62,8 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
     let router = Router::new();
     router
         .get_async("/", index_get)
-        .get_async("/signin-rso", signinrso_get)
+        .get_async("/signin-reddit", signin_reddit_get)
+        .get_async("/signin-rso", signin_rso_get)
         .get_async("/test", test_get)
         .run(req, env)
         .await
@@ -68,73 +71,54 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
 
 /// `GET /`
 pub async fn index_get(_req: Request, ctx: RouteContext<()>) -> Result<Response> {
-    let url = Url::parse_with_params(
-        &ctx.env
-            .var("RSO_PROVIDER_AUTHORIZE_URL")
-            .unwrap()
-            .to_string(),
+    let rso_url = Url::parse_with_params(
+        &envvar(&ctx.env, "RSO_PROVIDER_AUTHORIZE_URL")?,
         [
             ("response_type", "code"),
             ("scope", "openid cpid offline_access"),
-            ("redirect_uri", &get_rso_callback_url(&ctx.env)),
-            ("client_id", &get_rso_client_id(&ctx.env)),
+            ("redirect_uri", &envvar(&ctx.env, "RSO_CALLBACK_URL")?),
+            (
+                "client_id",
+                secret(&ctx.env, "RSO_CLIENT_ID")?.expose_secret(),
+            ),
+        ],
+    )
+    .unwrap();
+    let reddit_url = Url::parse_with_params(
+        &envvar(&ctx.env, "REDDIT_PROVIDER_AUTHORIZE_URL")?,
+        [
+            ("response_type", "code"),
+            ("scope", "identity"),
+            ("redirect_uri", &envvar(&ctx.env, "REDDIT_CALLBACK_URL")?),
+            (
+                "client_id",
+                secret(&ctx.env, "REDDIT_CLIENT_ID")?.expose_secret(),
+            ),
+            ("duration", "temporary"),
+            ("state", "asdf"),
         ],
     )
     .unwrap();
 
-    Response::from_html(format!("<a href=\"{}\">Sign In</a>", url))
+    Response::from_html(format!(
+        "<a href=\"{}\">RSO Sign In</a><br><a href=\"{}\">Reddit Sign In</a>",
+        rso_url, reddit_url
+    ))
+}
+
+/// `GET /signin-reddit`
+pub async fn signin_reddit_get(req: Request, ctx: RouteContext<()>) -> Result<Response> {
+    let tokens = get_reddit_oauth_client(&ctx.env)?
+        .handle_callback(req, ctx)
+        .await;
+    Response::from_html(format!("<code>{:#?}</code>", tokens))
 }
 
 /// `GET /signin-rso`
-pub async fn signinrso_get(req: Request, ctx: RouteContext<()>) -> Result<Response> {
-    #[derive(Debug, serde::Serialize, serde::Deserialize)]
-    struct RsoQuery {
-        code: String,
-        iss: String,
-        session_state: String,
-    }
-    #[derive(Debug, serde::Serialize, serde::Deserialize)]
-    struct RsoRequest {
-        grant_type: &'static str,
-        code: String,
-        redirect_uri: String,
-    }
-    #[serde_as]
-    #[derive(Debug, serde::Serialize, serde::Deserialize)]
-    struct RsoTokens {
-        access_token: String,
-        refresh_token: String,
-        #[serde_as(as = "serde_with::StringWithSeparator::<serde_with::formats::SpaceSeparator, String>")]
-        scope: Vec<String>,
-        id_token: Option<String>,
-        token_type: String,
-        #[serde_as(as = "serde_with::DurationSeconds<u64>")]
-        expires_in: Duration,
-    }
-
-    let rso_data: RsoQuery = req.query()?;
-    let response = get_client()
-        .post(ctx.env.var("RSO_PROVIDER_TOKEN_URL").unwrap().to_string())
-        .basic_auth(
-            get_rso_client_id(&ctx.env),
-            Some(get_rso_client_secret(&ctx.env)),
-        )
-        .form(&RsoRequest {
-            grant_type: "authorization_code",
-            code: rso_data.code,
-            redirect_uri: get_rso_callback_url(&ctx.env),
-        })
-        .send()
-        .await
-        .map_err(|e| Error::RustError(format!("Request to RSO `/token` failed: {}", e)))?;
-
-    // Response::from_html(format!("<code>{:#?}</code>", response.text().await))
-
-    let tokens: RsoTokens = response
-        .json()
-        .await
-        .map_err(|e| Error::RustError(format!("Failed to parse RSO `/token` response: {}", e)))?;
-
+pub async fn signin_rso_get(req: Request, ctx: RouteContext<()>) -> Result<Response> {
+    let tokens = get_rso_oauth_client(&ctx.env)?
+        .handle_callback(req, ctx)
+        .await;
     Response::from_html(format!("<code>{:#?}</code>", tokens))
 }
 

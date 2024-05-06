@@ -11,7 +11,7 @@ use serde_with::{DisplayFromStr, Same, TimestampMilliSeconds};
 use web_time::SystemTime;
 use worker::{query, D1Database, Env, Error, Message, Result};
 
-use crate::util::{get_webjob_bulk_update_batch_size, get_rgapi};
+use crate::util::{envvar, get_rgapi};
 use crate::with::{IgnoreKeys, WebSystemTime};
 use crate::ChampScore;
 
@@ -35,7 +35,9 @@ pub async fn handle(env: &Env, msg: Message<Task>) -> Result<Message<Task>> {
             Result::<Message<_>>::Ok(msg)
         }
         Task::SummonerBulkUpdate => {
-            let batch_size = get_webjob_bulk_update_batch_size(env);
+            let batch_size = envvar(env, "WEBJOB_BULK_UPDATE_BATCH_SIZE")?
+                .parse()
+                .map_err(|e| Error::RustError(format!("Env var `WEBJOB_BULK_UPDATE_BATCH_SIZE` should be a positive integer string: {}", e)))?;
             summoner_bulk_update(db, rgapi, batch_size).await?;
             Result::<Message<_>>::Ok(msg)
         }

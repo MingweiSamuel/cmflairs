@@ -8,9 +8,14 @@ main = "cm_worker/build/worker/shim.mjs"
 
 [vars]
 WEBJOB_BULK_UPDATE_BATCH_SIZE = "20"
+RSO_CLIENT_ID = "championmains"
 RSO_PROVIDER_AUTHORIZE_URL = "https://auth.riotgames.com/authorize"
 RSO_PROVIDER_TOKEN_URL = "https://auth.riotgames.com/token"
 RSO_CALLBACK_URL = "http://local.safe.championmains.com/signin-rso"
+REDDIT_CLIENT_ID = "Bmf2qtPKIBSAtw"
+REDDIT_PROVIDER_AUTHORIZE_URL = "https://www.reddit.com/api/v1/authorize"
+REDDIT_PROVIDER_TOKEN_URL = "https://www.reddit.com/api/v1/access_token"
+REDDIT_CALLBACK_URL = "http://local.safe.championmains.com/signin-reddit"
 
 [build]
 command = "cargo install -q worker-build && worker-build --release" # required
