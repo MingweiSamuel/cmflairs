@@ -1,5 +1,6 @@
 //! Helper utilities.
 
+use riven::reqwest::Client;
 use riven::RiotApi;
 use web_sys::console;
 use worker::{console_error, console_log, Env};
@@ -65,8 +66,25 @@ pub fn get_rgapi(env: &Env) -> &'static RiotApi {
     })
 }
 
+/// Initialize and return the [`RiotApi`] instance, if not already initialized.
+pub fn get_client() -> &'static Client {
+    use std::sync::OnceLock;
+    static ONCE: OnceLock<Client> = OnceLock::new();
+    ONCE.get_or_init(Client::new)
+}
+
+pub fn get_rso_client_id(env: &Env) -> String {
+    env.secret("RSO_CLIENT_ID").unwrap().to_string()
+}
+pub fn get_rso_client_secret(env: &Env) -> String {
+    env.secret("RSO_CLIENT_SECRET").unwrap().to_string()
+}
+pub fn get_rso_callback_url(env: &Env) -> String {
+    env.var("RSO_CALLBACK_URL").unwrap().to_string()
+}
+
 /// Get the bulk update batch size.
-pub fn get_bulk_update_batch_size(env: &Env) -> u32 {
+pub fn get_webjob_bulk_update_batch_size(env: &Env) -> u32 {
     env.var("WEBJOB_BULK_UPDATE_BATCH_SIZE")
         .unwrap()
         .to_string()
