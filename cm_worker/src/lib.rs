@@ -14,9 +14,13 @@ use worker::{
     RouteContext, Router,
 };
 
+use crate::auth::create_user_session_token;
+use crate::reddit::get_me;
 use crate::with::{IgnoreKeys, WebSystemTime};
 
 pub mod auth;
+pub mod base36;
+pub mod reddit;
 pub mod util;
 pub mod webjob;
 pub mod with;
@@ -83,7 +87,19 @@ pub async fn signin_reddit_get(req: Request, ctx: RouteContext<()>) -> Result<Re
     let tokens = get_reddit_oauth_client(&ctx.env)?
         .handle_callback(req, &ctx)
         .await?;
-    Response::from_html(format!("<code>{:#?}</code>", tokens))
+    log::info!("Reddit tokens: {:#?}", tokens);
+    let reddit_me = get_me(&ctx.env, &tokens.access_token).await?;
+    log::info!("Reddit me: {:#?}", reddit_me);
+
+    let user_id = create_or_get_db_user(&ctx.env, &reddit_me).await?;
+    let user_session_token = create_user_session_token(&ctx.env, user_id).await?;
+
+    Response::from_html(format!(
+        "<code>{:#?}</code><br><code>{:#?}</code><br><code>{}</code>",
+        tokens,
+        reddit_me,
+        user_session_token.as_str()
+    ))
 }
 
 /// `GET /signin-rso`
@@ -165,4 +181,28 @@ pub struct ChampScore {
     pub points: i32,
     /// What level (up to 7).
     pub level: i32,
+}
+
+async fn create_or_get_db_user(env: &Env, reddit_me: &reddit::Me) -> Result<u64> {
+    if reddit_me.can_edit_name {
+        return Result::Err(Error::RustError(format!(
+            "Cannot add new user with editable name: /u/{}.",
+            reddit_me.name
+        )));
+    }
+
+    let db = env.d1("BINDING_D1_DB").unwrap();
+    let query = query!(
+        &db,
+        "INSERT INTO user(reddit_id, reddit_user_name, profile_is_public)
+        VALUES (?, ?, 0)
+        ON CONFLICT DO UPDATE SET id=id RETURNING id",
+        reddit_me.id,
+        reddit_me.name,
+    )?;
+    let id: DeserializeAsWrap<(u64,), IgnoreKeys<(Same,)>> = query
+        .first(None)
+        .await?
+        .ok_or("Failed to get or insert user")?;
+    Ok(id.into_inner().0)
 }

@@ -3,21 +3,23 @@ DROP TABLE IF EXISTS user;
 
 CREATE TABLE IF NOT EXISTS user (
     id INTEGER PRIMARY KEY,
-    reddit_user_name TEXT NOT NULL,
+    reddit_id INTEGER NOT NULL UNIQUE,
+    reddit_user_name TEXT NOT NULL UNIQUE COLLATE NOCASE,
     profile_is_public INTEGER NOT NULL,
     profile_bgskinid INTEGER
 );
 
-CREATE INDEX IF NOT EXISTS idx_user__reddit_user_name ON user(reddit_user_name);
+CREATE INDEX IF NOT EXISTS idx_user__reddit_user_name ON user(reddit_user_name COLLATE NOCASE);
 
 INSERT INTO
     user (
+        reddit_id,
         reddit_user_name,
         profile_is_public,
         profile_bgskinid
     )
 VALUES
-    ('LugnutsK', 1, 99008);
+    (23806698, 'LugnutsK', 1, 99008);
 
 DROP TABLE IF EXISTS summoner;
 

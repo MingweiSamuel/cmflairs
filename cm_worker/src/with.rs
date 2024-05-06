@@ -5,7 +5,9 @@ use std::marker::PhantomData;
 
 use serde::de::{Deserializer, Error as DeError, IgnoredAny, MapAccess, Visitor};
 use serde_with::de::{DeserializeAs, DeserializeAsWrap};
-use serde_with::SerializeAs;
+use serde_with::{Same, SerializeAs};
+
+use crate::base36;
 
 /// Deserialize a tuple sequence from a map, ignoring keys.
 pub struct IgnoreKeys<T>(PhantomData<T>);
@@ -84,8 +86,16 @@ where
     where
         D: Deserializer<'de>,
     {
-        let time = T::deserialize_as(deserializer)?;
-        Ok(<web_time::SystemTime as web_time::web::SystemTimeExt>::from_std(time))
+        #[cfg(all(target_family = "wasm", target_os = "unknown"))]
+        {
+            let time = T::deserialize_as(deserializer)?;
+            Ok(<web_time::SystemTime as web_time::web::SystemTimeExt>::from_std(time))
+        }
+        #[cfg(not(all(target_family = "wasm", target_os = "unknown")))]
+        {
+            let _ = deserializer;
+            unimplemented!();
+        }
     }
 }
 impl<T> SerializeAs<web_time::SystemTime> for WebSystemTime<T>
@@ -96,9 +106,32 @@ where
     where
         S: serde::Serializer,
     {
-        T::serialize_as(
-            &<web_time::SystemTime as web_time::web::SystemTimeExt>::to_std(*source),
-            serializer,
-        )
+        #[cfg(all(target_family = "wasm", target_os = "unknown"))]
+        {
+            let time = <web_time::SystemTime as web_time::web::SystemTimeExt>::to_std(*source);
+            T::serialize_as(&time, serializer)
+        }
+        #[cfg(not(all(target_family = "wasm", target_os = "unknown")))]
+        {
+            let _ = (source, serializer);
+            unimplemented!();
+        }
+    }
+}
+
+/// Parse a String as Base36;
+pub struct Base36<T = Same>(PhantomData<T>);
+impl<'de, T> DeserializeAs<'de, u64> for Base36<T>
+where
+    T: DeserializeAs<'de, String>,
+{
+    fn deserialize_as<D>(deserializer: D) -> Result<u64, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = T::deserialize_as(deserializer)?;
+        let n = base36::decode(&s)
+            .map_err(|b| <D::Error>::custom(format!("Bad char for base36: {}", b)))?;
+        Ok(n)
     }
 }

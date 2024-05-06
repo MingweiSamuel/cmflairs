@@ -2,9 +2,11 @@
 
 use std::sync::{Once, OnceLock};
 
+use hmac::Hmac;
 use riven::reqwest::Client;
 use riven::RiotApi;
 use secrecy::{ExposeSecret, SecretString};
+use sha2::Sha512;
 use web_sys::console;
 use worker::{console_error, console_log, Env, Error, Result};
 
@@ -124,6 +126,27 @@ pub fn get_reddit_oauth_client(env: &Env) -> Result<&'static OauthClient> {
         };
         log::info!("Initializing Reddit oauth client: {:#?}", client);
         Ok(client)
+    })
+    .as_ref()
+    .map_err(|s| Error::RustError(s.to_string()))
+}
+
+/// Gets the HMAC for signing JWTs.
+pub fn get_jwt_hmac(env: &Env) -> Result<&'static Hmac<Sha512>> {
+    static ONCE: OnceLock<Result<Hmac<Sha512>>> = OnceLock::new();
+    ONCE.get_or_init(|| {
+        let secret = secret(env, "HMAC_SECRET")?;
+        let secret = base64::decode_config(secret.expose_secret(), base64::URL_SAFE_NO_PAD)
+            .map_err(|e| format!("Failed to decode `HMAC_SECRET`: {}", e))?;
+        if secret.len() < 32 {
+            return Result::Err(Error::RustError(format!(
+                "`HMAC_SECRET` is too short, len: {}",
+                secret.len(),
+            )));
+        }
+        let hmac = hmac::Mac::new_from_slice(&secret)
+            .map_err(|e| format!("Failed to create hmac: {}", e))?;
+        Ok(hmac)
     })
     .as_ref()
     .map_err(|s| Error::RustError(s.to_string()))
