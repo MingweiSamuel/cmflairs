@@ -9,6 +9,7 @@ use riven::consts::{Champion, PlatformRoute, RegionalRoute};
 use serde_with::de::DeserializeAsWrap;
 use serde_with::json::JsonString;
 use serde_with::{BoolFromInt, DisplayFromStr, Same, TimestampMilliSeconds};
+use url::Url;
 use util::{get_reddit_oauth_client, get_rso_oauth_client};
 use web_time::SystemTime;
 use worker::{
@@ -16,8 +17,12 @@ use worker::{
     RouteContext, Router,
 };
 
-use crate::auth::{create_session_state_token, verify_session_state_token, SessionState};
+use crate::auth::{
+    create_session_state_token, verify_authorization_bearer_token, verify_session_state_token,
+    SessionState,
+};
 use crate::reddit::get_me;
+use crate::util::envvar;
 use crate::with::{IgnoreKeys, WebSystemTime};
 
 pub mod auth;
@@ -56,6 +61,14 @@ pub async fn queue(
         .ok_or(Error::RustError(format!("{:?}", errors)))
 }
 
+fn allow_cors_pages(env: &Env, response: Result<Response>) -> Result<Response> {
+    let mut response = response?;
+    response
+        .headers_mut()
+        .append("Access-Control-Allow-Origin", &envvar(env, "PAGES_ORIGIN")?)?;
+    Ok(response)
+}
+
 /// Cloudflare fetch request handler.
 #[event(fetch, respond_with_errors)]
 pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
@@ -69,22 +82,36 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
     let router = Router::new();
     router
         .get("/", index_get)
-        .get("/signin-anonymous", |_req, ctx| {
-            Response::from_json(&create_session_state_token(&ctx.env, SessionState::Anonymous)?)
+        .get("/signin/anonymous", |_req, ctx| {
+            allow_cors_pages(
+                &ctx.env,
+                Response::from_json(&create_session_state_token(
+                    &ctx.env,
+                    SessionState::Anonymous,
+                )?),
+            )
         })
-        .get("/login-reddit", |req, ctx| {
+        .get("/signin/upgrade", |req, ctx| {
+            let session_state = verify_authorization_bearer_token(&ctx.env, req)?;
+            let SessionState::Signin { user_id } = session_state else {
+                return Err(Error::RustError("Session state must be SIGNIN.".to_owned()));
+            };
+            let token = create_session_state_token(&ctx.env, SessionState::Session { user_id })?;
+            allow_cors_pages(&ctx.env, Response::from_json(&token))
+        })
+        .get("/signin/reddit", |req, ctx| {
             let State { state } = req.query()?;
             let session_state = verify_session_state_token(&ctx.env, &state)?;
-            let () = matches!(session_state, SessionState::Anonymous).then_some(()).ok_or("Session state must be ANONYMOUS.")?;
-            Response::redirect(get_reddit_oauth_client(&ctx.env)?.make_login_link(&state))
-        })
-        .get("/login-rso", |_req, ctx| {
-            Response::redirect(get_rso_oauth_client(&ctx.env)?.make_login_link("foobar"))
+            let () = matches!(session_state, SessionState::Anonymous)
+                .then_some(())
+                .ok_or("Session state must be ANONYMOUS.")?;
+            Response::redirect(get_reddit_oauth_client(&ctx.env)?.make_signin_link(&state))
         })
         .get_async("/signin-reddit", signin_reddit_get)
+        .get("/signin/rso", |_req, ctx| {
+            Response::redirect(get_rso_oauth_client(&ctx.env)?.make_signin_link("foobar"))
+        })
         .get_async("/signin-rso", signin_rso_get)
-        // .get("/signin-rso", |req, _| Response::redirect(Url::parse_with_params("http://local.safe.championmains.com/signin-rso-2", req.url()?.query_pairs()).unwrap()))
-        // .get_async("/signin-rso-2", signin_rso_get)
         .get_async("/test", test_get)
         .run(req, env)
         .await
@@ -92,7 +119,7 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
 
 /// `GET /`
 pub fn index_get(_req: Request, ctx: RouteContext<()>) -> Result<Response> {
-    let reddit_signin_link = get_reddit_oauth_client(&ctx.env)?.make_login_link("foobar");
+    let reddit_signin_link = get_reddit_oauth_client(&ctx.env)?.make_signin_link("foobar");
     Response::from_html(format!(
         r##"
 <a id="signin-reddit" href="#">Sign In With Reddit</a>
@@ -110,7 +137,7 @@ pub fn index_get(_req: Request, ctx: RouteContext<()>) -> Result<Response> {
 
 /// `GET /signin-reddit`
 pub async fn signin_reddit_get(req: Request, ctx: RouteContext<()>) -> Result<Response> {
-    let tokens = get_reddit_oauth_client(&ctx.env)?
+    let (tokens, state) = get_reddit_oauth_client(&ctx.env)?
         .handle_callback(req, &ctx)
         .await?;
     log::info!("Reddit tokens: {:#?}", tokens);
@@ -118,20 +145,26 @@ pub async fn signin_reddit_get(req: Request, ctx: RouteContext<()>) -> Result<Re
     log::info!("Reddit me: {:#?}", reddit_me);
 
     let user_id = create_or_get_db_user(&ctx.env, &reddit_me).await?;
-    let user_session_token = create_session_state_token(&ctx.env, SessionState::Signin { user_id })?;
+    let user_signin_token = create_session_state_token(&ctx.env, SessionState::Signin { user_id })?;
 
-    Response::from_html(format!(
-        r##"
-<script type="text/javascript">
-    const loginNonce = localStorage.getItem('login_nonce');
-    const state = new URL(document.location).searchParams.get('state');
-    if (loginNonce === state) {{
-        localStorage.setItem('login_token', '{}');
-    }}
-</script>
-"##,
-        user_session_token
-    ))
+    let url = Url::parse_with_params(
+        &envvar(&ctx.env, "PAGES_ORIGIN")?,
+        [("token", user_signin_token), ("state", state)],
+    )?;
+    Response::redirect(url)
+
+    //     Response::from_html(format!(
+    //         r##"
+    // <script type="text/javascript">
+    //     const loginNonce = localStorage.getItem('login_nonce');
+    //     const state = new URL(document.location).searchParams.get('state');
+    //     if (loginNonce === state) {{
+    //         localStorage.setItem('login_token', '{}');
+    //     }}
+    // </script>
+    // "##,
+    //         user_signin_token
+    //     ))
 }
 
 /// `GET /signin-rso`

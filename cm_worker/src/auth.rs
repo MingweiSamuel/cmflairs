@@ -17,10 +17,10 @@ use crate::util::{get_jwt_hmac, get_reqwest_client};
 pub struct OauthCallbackQueryResponse {
     /// Code to post to the provider's token endpoint.
     pub code: String,
+    /// Echoed state.
+    pub state: Option<String>,
     /// Issuer.
     pub iss: Option<String>,
-    /// Echo'd state.
-    pub session_state: Option<String>,
 }
 
 /// Form body data posted to the provider's token endpoint.
@@ -72,7 +72,7 @@ pub struct OauthClient {
 }
 impl OauthClient {
     /// Creates the URL for the authorization endpoint.
-    pub fn make_login_link(&self, state: &str) -> Url {
+    pub fn make_signin_link(&self, state: &str) -> Url {
         Url::parse_with_params(
             &self.provider_authorize_url,
             [
@@ -92,8 +92,14 @@ impl OauthClient {
         &self,
         req: Request,
         ctx: &RouteContext<()>,
-    ) -> Result<OauthTokenResponse> {
+    ) -> Result<(OauthTokenResponse, String)> {
         let callback_data: OauthCallbackQueryResponse = req.query()?;
+
+        let state = callback_data.state.ok_or("Received no echoed `state`.")?;
+        let session_state = verify_session_state_token(&ctx.env, &state)?;
+        let () = matches!(session_state, SessionState::Anonymous)
+            .then_some(())
+            .ok_or("Session state must be ANONYMOUS.")?;
 
         log::info!(
             "{:#?}",
@@ -138,7 +144,7 @@ impl OauthClient {
                 self.provider_token_url, e,
             ))
         })?;
-        Ok(tokens)
+        Ok((tokens, state))
     }
 }
 
@@ -237,4 +243,14 @@ pub fn verify_session_state_token(env: &Env, token: &str) -> Result<SessionState
         .map_err(|e| format!("Failed to read/verify user sesssion jwt: {}.", e))?;
     let () = claims.check_now()?;
     Ok(claims.session_state)
+}
+
+/// Verify the `Authorization: Bearer ...` token in the requet.
+pub fn verify_authorization_bearer_token(env: &Env, req: Request) -> Result<SessionState> {
+    let header = req.headers().get("Authorization")?;
+    let token = header
+        .as_deref()
+        .and_then(|s| s.strip_prefix("Bearer "))
+        .ok_or("Expected `Authorization: Bearer ...` header.")?;
+    verify_session_state_token(env, token)
 }

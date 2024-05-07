@@ -1,7 +1,35 @@
-<script>
+<script lang="ts">
+  import { onMount } from 'svelte';
   import Counter from './Counter.svelte';
-  import welcome from '$lib/images/svelte-welcome.webp';
-  import welcome_fallback from '$lib/images/svelte-welcome.png';
+
+  const WORKER_ORIGIN = import.meta.env.VITE_WORKER_ORIGIN;
+
+  let signinToken: string | null = null;
+  onMount(async () => {
+    const url = new URL(document.location.href);
+    const state = url.searchParams.get('state');
+    const token = url.searchParams.get('token');
+    if (null != state || null != token) {
+      url.search = '';
+      history.replaceState(Object.assign({}, history.state, { sess: { state, token }}), '', url);
+      return;
+    }
+    if (null != history.state.sess) {
+      const { state, token } = history.state.sess;
+      const oldState = localStorage.getItem('SIGNIN_TOKEN');
+      if (oldState === state) {
+        const resp = await fetch(`${WORKER_ORIGIN}/signin/upgrade`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        const finalToken = await resp.json();
+        localStorage.setItem('SESSION_TOKEN', finalToken);
+        return;
+      }
+    }
+    const resp = await fetch(`${WORKER_ORIGIN}/signin/anonymous`);
+    signinToken = await resp.json();
+    localStorage.setItem('SIGNIN_TOKEN', signinToken!);
+  });
 </script>
 
 <svelte:head>
@@ -10,22 +38,11 @@
 </svelte:head>
 
 <section>
-  <h1>
-    <span class="welcome">
-      <picture>
-        <source srcset={welcome} type="image/webp" />
-        <img src={welcome_fallback} alt="Welcome" />
-      </picture>
-    </span>
-
-    to your new<br />SvelteKit app
-  </h1>
-
-  <h2>
-    try editing <strong>src/routes/+page.svelte</strong>
-  </h2>
-
   <Counter />
+  <form action={`${WORKER_ORIGIN}/signin/reddit`}>
+    <input type="hidden" name="state" value={signinToken} />
+    <input type="submit" value="Sign In With Reddit" disabled={null == signinToken} />
+  </form>
 </section>
 
 <style>
@@ -35,25 +52,5 @@
     justify-content: center;
     align-items: center;
     flex: 0.6;
-  }
-
-  h1 {
-    width: 100%;
-  }
-
-  .welcome {
-    display: block;
-    position: relative;
-    width: 100%;
-    height: 0;
-    padding: 0 0 calc(100% * 495 / 2048) 0;
-  }
-
-  .welcome img {
-    position: absolute;
-    width: 100%;
-    height: 100%;
-    top: 0;
-    display: block;
   }
 </style>

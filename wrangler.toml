@@ -16,6 +16,7 @@ REDDIT_CLIENT_ID = "Bmf2qtPKIBSAtw"
 REDDIT_PROVIDER_AUTHORIZE_URL = "https://www.reddit.com/api/v1/authorize"
 REDDIT_PROVIDER_TOKEN_URL = "https://www.reddit.com/api/v1/access_token"
 REDDIT_CALLBACK_URL = "http://local.safe.championmains.com/signin-reddit"
+PAGES_ORIGIN = "http://localhost:5173"
 
 [build]
 command = "cargo install -q worker-build && worker-build --release" # required
