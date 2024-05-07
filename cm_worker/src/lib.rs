@@ -9,7 +9,6 @@ use riven::consts::{Champion, PlatformRoute, RegionalRoute};
 use serde_with::de::DeserializeAsWrap;
 use serde_with::json::JsonString;
 use serde_with::{BoolFromInt, DisplayFromStr, Same, TimestampMilliSeconds};
-use url::Url;
 use util::{get_reddit_oauth_client, get_rso_oauth_client};
 use web_time::SystemTime;
 use worker::{
@@ -22,7 +21,7 @@ use crate::auth::{
     SessionState,
 };
 use crate::reddit::get_me;
-use crate::util::envvar;
+use crate::util::pages_origin;
 use crate::with::{IgnoreKeys, WebSystemTime};
 
 pub mod auth;
@@ -63,9 +62,10 @@ pub async fn queue(
 
 fn allow_cors_pages(env: &Env, response: Result<Response>) -> Result<Response> {
     let mut response = response?;
-    response
-        .headers_mut()
-        .append("Access-Control-Allow-Origin", &envvar(env, "PAGES_ORIGIN")?)?;
+    response.headers_mut().append(
+        "Access-Control-Allow-Origin",
+        pages_origin(env)?.as_str().trim_end_matches('/'),
+    )?;
     Ok(response)
 }
 
@@ -81,7 +81,7 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
 
     let router = Router::new();
     router
-        .get("/", index_get)
+        .get("/", |_req, ctx| Response::redirect(pages_origin(&ctx.env)?))
         .get("/signin/anonymous", |_req, ctx| {
             allow_cors_pages(
                 &ctx.env,
@@ -112,7 +112,6 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
             Response::redirect(get_rso_oauth_client(&ctx.env)?.make_signin_link("foobar"))
         })
         .get_async("/signin-rso", signin_rso_get)
-        .get_async("/test", test_get)
         .run(req, env)
         .await
 }
@@ -147,10 +146,9 @@ pub async fn signin_reddit_get(req: Request, ctx: RouteContext<()>) -> Result<Re
     let user_id = create_or_get_db_user(&ctx.env, &reddit_me).await?;
     let user_signin_token = create_session_state_token(&ctx.env, SessionState::Signin { user_id })?;
 
-    let url = Url::parse_with_params(
-        &envvar(&ctx.env, "PAGES_ORIGIN")?,
-        [("token", user_signin_token), ("state", state)],
-    )?;
+    let mut url = pages_origin(&ctx.env)?;
+    url.query_pairs_mut()
+        .extend_pairs([("token", user_signin_token), ("state", state)]);
     Response::redirect(url)
 
     //     Response::from_html(format!(

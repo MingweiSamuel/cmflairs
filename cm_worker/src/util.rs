@@ -7,6 +7,7 @@ use riven::reqwest::Client;
 use riven::RiotApi;
 use secrecy::{ExposeSecret, SecretString};
 use sha2::Sha512;
+use url::Url;
 use web_sys::console;
 use worker::{console_error, console_log, Env, Error, Result};
 
@@ -150,6 +151,12 @@ pub fn get_jwt_hmac(env: &Env) -> Result<&'static Hmac<Sha512>> {
     })
     .as_ref()
     .map_err(|s| Error::RustError(s.to_string()))
+}
+
+/// Cloudflare pages origin (domain/host/port).
+pub fn pages_origin(env: &Env) -> Result<Url> {
+    Ok(Url::parse(&envvar(env, "PAGES_ORIGIN")?)
+        .map_err(|e| format!("Invalid url in `PAGES_ORIGIN`: {}", e))?)
 }
 
 /// Get an env var.
