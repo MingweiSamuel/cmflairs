@@ -3,3 +3,14 @@
 /target/
 /.dev.vars
 /cm_worker/build/
+
+.DS_Store
+node_modules
+.env
+.env.*
+!.env.example
+.vercel
+.output
+.npmrc
+vite.config.js.timestamp-*
+vite.config.ts.timestamp-*
