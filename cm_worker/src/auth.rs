@@ -1,7 +1,9 @@
 //! Authentication-related stuff (oauth2 and utilities).
 
-use jwt::token::Signed;
-use jwt::{AlgorithmType, JoseHeader, SignWithKey, SigningAlgorithm, Token};
+use std::num::NonZeroU64;
+
+use jwt::{SignWithKey, VerifyWithKey};
+use rand::{thread_rng, RngCore};
 use secrecy::{ExposeSecret, SecretString};
 use serde_with::serde_as;
 use url::Url;
@@ -80,7 +82,6 @@ impl OauthClient {
                 ("client_id", &self.client_id),
                 ("duration", "temporary"),
                 ("state", state),
-                // ("prompt", "login"), // RSO
             ],
         )
         .unwrap()
@@ -141,26 +142,99 @@ impl OauthClient {
     }
 }
 
+/// Session token types.
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type")]
+pub enum SessionState {
+    /// Pre-session token issued to prevent login CSRF.
+    #[serde(rename = "ANONYMOUS")]
+    Anonymous,
+
+    /// Short-lived sign-in token, to be exchanged for a [`Self::Session`] token.
+    #[serde(rename = "SIGNIN")]
+    Signin {
+        /// User ID to be signed-in.
+        user_id: NonZeroU64,
+    },
+
+    /// User login session token.
+    #[serde(rename = "SESSION")]
+    Session {
+        /// User ID of signed-in user.
+        user_id: NonZeroU64,
+    },
+}
+impl SessionState {
+    /// Time to live for each type of session.
+    pub fn ttl(self) -> Duration {
+        match self {
+            SessionState::Anonymous => Duration::from_secs(24 * 60 * 60),
+            SessionState::Signin { .. } => Duration::from_secs(60),
+            SessionState::Session { .. } => Duration::from_secs(3 * 60 * 60),
+        }
+    }
+}
+
 /// User session JWT, for login.
 #[serde_as]
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub struct JwtUserSession {
+pub struct JwtSessionState {
+    /// Nonce UUID.
+    #[serde_as(as = "serde_with::base64::Base64<serde_with::base64::UrlSafe>")]
+    nonce: [u8; 16],
+    /// Issued-at time.
     #[serde_as(as = "crate::with::WebSystemTime<serde_with::TimestampSeconds<i64>>")]
     iat: SystemTime,
+    /// Expiration time.
     #[serde_as(as = "crate::with::WebSystemTime<serde_with::TimestampSeconds<i64>>")]
     exp: SystemTime,
-    /// User's DB ID.
-    user_id: u64,
+    /// User session state.
+    #[serde_as(as = "serde_with::json::JsonString")]
+    session_state: SessionState,
+}
+impl JwtSessionState {
+    /// Creates a new token expiring after [`SessionState::ttl`] from now.
+    /// Sets a random [`Self::nonce`].
+    pub fn create_now(session_state: SessionState) -> Self {
+        let iat = SystemTime::now();
+        let exp = iat + session_state.ttl();
+
+        let mut nonce = [0; 16];
+        thread_rng().fill_bytes(&mut nonce);
+
+        Self {
+            nonce,
+            iat,
+            exp,
+            session_state,
+        }
+    }
+
+    /// Checks that the token is valid right now.
+    pub fn check_now(&self) -> Result<()> {
+        let now = SystemTime::now();
+        (self.iat < now && now < self.exp)
+            .then_some(())
+            .ok_or("Token is expired.")?;
+        Ok(())
+    }
 }
 
 /// Create a user session token for the given `user_id`, expiring in some amount of time.
-pub async fn create_user_session_token(env: &Env, user_id: u64) -> Result<String> {
-    let jwt_hmac = get_jwt_hmac(env)?;
-    let iat = SystemTime::now();
-    let exp = iat + Duration::from_secs(600);
-    let claims = JwtUserSession { user_id, iat, exp };
+pub fn create_session_state_token(env: &Env, session_state: SessionState) -> Result<String> {
+    let claims = JwtSessionState::create_now(session_state);
     let token = claims
-        .sign_with_key(jwt_hmac)
+        .sign_with_key(get_jwt_hmac(env)?)
         .map_err(|e| format!("Failed to sign user session jwt: {}.", e))?;
     Ok(token)
+}
+
+/// Verifies that the session token is valid. Returns the [`SessionState`] if valid, otherwise
+/// returns an error.
+pub fn verify_session_state_token(env: &Env, token: &str) -> Result<SessionState> {
+    let claims: JwtSessionState = token
+        .verify_with_key(get_jwt_hmac(env)?)
+        .map_err(|e| format!("Failed to read/verify user sesssion jwt: {}.", e))?;
+    let () = claims.check_now()?;
+    Ok(claims.session_state)
 }

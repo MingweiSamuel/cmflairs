@@ -3,6 +3,7 @@
 /target/
 /.dev.vars
 /cm_worker/build/
+/rustc-ice-*.txt
 
 .DS_Store
 node_modules

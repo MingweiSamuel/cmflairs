@@ -18,13 +18,14 @@ hmac = "0.12.1"
 itertools = "0.12.1"
 jwt = "0.16.0"
 log = "0.4.21"
+rand = "0.8.5"
 riven = { version = "2.46.0", default-features = false, features = [
     "rustls-tls",
 ] }
 secrecy = "0.8.0"
 serde = "1.0.200"
 serde_json = "1.0.116"
-serde_with = { version = "3.8.1", features = ["json"] }
+serde_with = { version = "3.8.1", features = ["json", "base64"] }
 sha2 = "0.10.8"
 url = "2.5.0"
 wasm-bindgen = "0.2" # Cloudflare `worker` pins a specific version.
