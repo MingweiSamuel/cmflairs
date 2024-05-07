@@ -2,8 +2,9 @@
 
 Deploying is done via Cloudflare Pages git integration.
 ```yaml
-build_command: npm run build --prefix cm_pages
-build_output_dir: cm_pages/build
+build_command: npm run build
+build_output_dir: build
+root_directory_path: cm_pages
 ```
 
 ## Developing
