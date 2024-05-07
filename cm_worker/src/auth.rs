@@ -80,6 +80,7 @@ impl OauthClient {
                 ("client_id", &self.client_id),
                 ("duration", "temporary"),
                 ("state", state),
+                // ("prompt", "login"), // RSO
             ],
         )
         .unwrap()
@@ -140,40 +141,25 @@ impl OauthClient {
     }
 }
 
-/// JWT header with expiry.
-#[serde_as]
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub struct JwtHeader {
-    alg: AlgorithmType,
-    #[serde_as(as = "crate::with::WebSystemTime<serde_with::TimestampMilliSeconds<i64>>")]
-    exp: SystemTime,
-}
-impl JoseHeader for JwtHeader {
-    fn algorithm_type(&self) -> AlgorithmType {
-        self.alg
-    }
-}
-
 /// User session JWT, for login.
 #[serde_as]
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct JwtUserSession {
+    #[serde_as(as = "crate::with::WebSystemTime<serde_with::TimestampSeconds<i64>>")]
+    iat: SystemTime,
+    #[serde_as(as = "crate::with::WebSystemTime<serde_with::TimestampSeconds<i64>>")]
+    exp: SystemTime,
+    /// User's DB ID.
     user_id: u64,
 }
 
 /// Create a user session token for the given `user_id`, expiring in some amount of time.
-pub async fn create_user_session_token(
-    env: &Env,
-    user_id: u64,
-) -> Result<Token<JwtHeader, JwtUserSession, Signed>> {
+pub async fn create_user_session_token(env: &Env, user_id: u64) -> Result<String> {
     let jwt_hmac = get_jwt_hmac(env)?;
-
-    let header = JwtHeader {
-        alg: jwt_hmac.algorithm_type(),
-        exp: SystemTime::now() + Duration::from_secs(600),
-    };
-    let claims = JwtUserSession { user_id };
-    let token = Token::new(header, claims)
+    let iat = SystemTime::now();
+    let exp = iat + Duration::from_secs(600);
+    let claims = JwtUserSession { user_id, iat, exp };
+    let token = claims
         .sign_with_key(jwt_hmac)
         .map_err(|e| format!("Failed to sign user session jwt: {}.", e))?;
     Ok(token)

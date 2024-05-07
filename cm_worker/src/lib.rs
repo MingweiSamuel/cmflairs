@@ -7,6 +7,7 @@ use riven::consts::{Champion, PlatformRoute, RegionalRoute};
 use serde_with::de::DeserializeAsWrap;
 use serde_with::json::JsonString;
 use serde_with::{BoolFromInt, DisplayFromStr, Same, TimestampMilliSeconds};
+use url::Url;
 use util::{get_reddit_oauth_client, get_rso_oauth_client};
 use web_time::SystemTime;
 use worker::{
@@ -70,16 +71,29 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         })
         .get_async("/signin-reddit", signin_reddit_get)
         .get_async("/signin-rso", signin_rso_get)
+        // .get("/signin-rso", |req, _| Response::redirect(Url::parse_with_params("http://local.safe.championmains.com/signin-rso-2", req.url()?.query_pairs()).unwrap()))
+        // .get_async("/signin-rso-2", signin_rso_get)
         .get_async("/test", test_get)
         .run(req, env)
         .await
 }
 
 /// `GET /`
-pub fn index_get(_req: Request, _ctx: RouteContext<()>) -> Result<Response> {
-    Response::from_html(
-        "<a href=\"/login-rso\">RSO Sign In</a><br><a href=\"/login-reddit\">Reddit Sign In</a>",
-    )
+pub fn index_get(_req: Request, ctx: RouteContext<()>) -> Result<Response> {
+    let reddit_signin_link = get_reddit_oauth_client(&ctx.env)?.make_login_link("foobar");
+    Response::from_html(format!(
+        r##"
+<a id="signin-reddit" href="#">Sign In With Reddit</a>
+<script type="text/javascript">
+    const loginNonce = "" + crypto.getRandomValues(new Uint32Array(1))[0];
+    localStorage.setItem('login_nonce', loginNonce);
+    const loginUrl = new URL('{}');
+    loginUrl.searchParams.set('state', loginNonce);
+    document.getElementById('signin-reddit').href = loginUrl.href;
+</script>
+"##,
+        reddit_signin_link
+    ))
 }
 
 /// `GET /signin-reddit`
@@ -95,10 +109,16 @@ pub async fn signin_reddit_get(req: Request, ctx: RouteContext<()>) -> Result<Re
     let user_session_token = create_user_session_token(&ctx.env, user_id).await?;
 
     Response::from_html(format!(
-        "<code>{:#?}</code><br><code>{:#?}</code><br><code>{}</code>",
-        tokens,
-        reddit_me,
-        user_session_token.as_str()
+        r##"
+<script type="text/javascript">
+    const loginNonce = localStorage.getItem('login_nonce');
+    const state = new URL(document.location).searchParams.get('state');
+    if (loginNonce === state) {{
+        localStorage.setItem('login_token', '{}');
+    }}
+</script>
+"##,
+        user_session_token
     ))
 }
 
