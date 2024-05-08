@@ -246,7 +246,7 @@ pub fn verify_session_state_token(env: &Env, token: &str) -> Result<SessionState
 }
 
 /// Verify the `Authorization: Bearer ...` token in the requet.
-pub fn verify_authorization_bearer_token(env: &Env, req: Request) -> Result<SessionState> {
+pub fn verify_authorization_bearer_token(env: &Env, req: &Request) -> Result<SessionState> {
     let header = req.headers().get("Authorization")?;
     let token = header
         .as_deref()

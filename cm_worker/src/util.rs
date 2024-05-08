@@ -154,7 +154,7 @@ pub fn get_jwt_hmac(env: &Env) -> Result<&'static Hmac<Sha512>> {
 }
 
 /// Cloudflare pages origin (domain/host/port).
-pub fn pages_origin(env: &Env) -> Result<Url> {
+pub fn get_pages_origin(env: &Env) -> Result<Url> {
     Ok(Url::parse(&envvar(env, "PAGES_ORIGIN")?)
         .map_err(|e| format!("Invalid url in `PAGES_ORIGIN`: {}", e))?)
 }

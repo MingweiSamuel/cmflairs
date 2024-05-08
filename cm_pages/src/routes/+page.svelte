@@ -1,29 +1,45 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { replaceState } from '$app/navigation';
   import Counter from './Counter.svelte';
 
   const WORKER_ORIGIN = import.meta.env.VITE_WORKER_ORIGIN;
 
   let signinToken: string | null = null;
   onMount(async () => {
+    {
+      const session_token = localStorage.getItem('SESSION_TOKEN');
+      if (null != session_token) {
+        const resp = await fetch(`${WORKER_ORIGIN}/user/me`, {
+          headers: { Authorization: `Bearer ${session_token}` }
+        });
+        let data = await resp.json();
+        console.log(data);
+      }
+    }
+
     const url = new URL(document.location.href);
     const state = url.searchParams.get('state');
     const token = url.searchParams.get('token');
     if (null != state || null != token) {
       url.search = '';
-      history.replaceState(Object.assign({}, history.state, { sess: { state, token }}), '', url);
+      replaceState(url, { sess: { state, token } });
       return;
     }
     if (null != history.state.sess) {
       const { state, token } = history.state.sess;
       const oldState = localStorage.getItem('SIGNIN_TOKEN');
       if (oldState === state) {
-        const resp = await fetch(`${WORKER_ORIGIN}/signin/upgrade`, {
-          headers: { Authorization: `Bearer ${token}` }
-        });
-        const finalToken = await resp.json();
-        localStorage.setItem('SESSION_TOKEN', finalToken);
-        return;
+        try {
+          const resp = await fetch(`${WORKER_ORIGIN}/signin/upgrade`, {
+            headers: { Authorization: `Bearer ${token}` }
+          });
+          const finalToken = await resp.json();
+          localStorage.setItem('SESSION_TOKEN', finalToken);
+          return;
+        } catch {
+          localStorage.removeItem('SIGNIN_TOKEN');
+        }
       }
     }
     const resp = await fetch(`${WORKER_ORIGIN}/signin/anonymous`);

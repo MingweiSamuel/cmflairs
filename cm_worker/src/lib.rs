@@ -8,7 +8,7 @@ use futures::future::join_all;
 use riven::consts::{Champion, PlatformRoute, RegionalRoute};
 use serde_with::de::DeserializeAsWrap;
 use serde_with::json::JsonString;
-use serde_with::{BoolFromInt, DisplayFromStr, Same, TimestampMilliSeconds};
+use serde_with::{serde_as, BoolFromInt, DisplayFromStr, Same, TimestampMilliSeconds};
 use util::{get_reddit_oauth_client, get_rso_oauth_client};
 use web_time::SystemTime;
 use worker::{
@@ -21,7 +21,7 @@ use crate::auth::{
     SessionState,
 };
 use crate::reddit::get_me;
-use crate::util::pages_origin;
+use crate::util::get_pages_origin;
 use crate::with::{IgnoreKeys, WebSystemTime};
 
 pub mod auth;
@@ -60,15 +60,6 @@ pub async fn queue(
         .ok_or(Error::RustError(format!("{:?}", errors)))
 }
 
-fn allow_cors_pages(env: &Env, response: Result<Response>) -> Result<Response> {
-    let mut response = response?;
-    response.headers_mut().append(
-        "Access-Control-Allow-Origin",
-        pages_origin(env)?.as_str().trim_end_matches('/'),
-    )?;
-    Ok(response)
-}
-
 /// Cloudflare fetch request handler.
 #[event(fetch, respond_with_errors)]
 pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
@@ -79,25 +70,28 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         state: String,
     }
 
+    let pages_origin = get_pages_origin(&env)?;
+
     let router = Router::new();
-    router
-        .get("/", |_req, ctx| Response::redirect(pages_origin(&ctx.env)?))
-        .get("/signin/anonymous", |_req, ctx| {
-            allow_cors_pages(
-                &ctx.env,
-                Response::from_json(&create_session_state_token(
-                    &ctx.env,
-                    SessionState::Anonymous,
-                )?),
-            )
+    let response = router
+        .get("/", |_req, ctx| {
+            Response::redirect(get_pages_origin(&ctx.env)?)
         })
+        .options("/signin/anonymous", |_, _| Response::empty())
+        .get("/signin/anonymous", |_req, ctx| {
+            Response::from_json(&create_session_state_token(
+                &ctx.env,
+                SessionState::Anonymous,
+            )?)
+        })
+        .options("/signin/upgrade", |_, _| Response::empty())
         .get("/signin/upgrade", |req, ctx| {
-            let session_state = verify_authorization_bearer_token(&ctx.env, req)?;
+            let session_state = verify_authorization_bearer_token(&ctx.env, &req)?;
             let SessionState::Signin { user_id } = session_state else {
                 return Err(Error::RustError("Session state must be SIGNIN.".to_owned()));
             };
             let token = create_session_state_token(&ctx.env, SessionState::Session { user_id })?;
-            allow_cors_pages(&ctx.env, Response::from_json(&token))
+            Response::from_json(&token)
         })
         .get("/signin/reddit", |req, ctx| {
             let State { state } = req.query()?;
@@ -112,8 +106,28 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
             Response::redirect(get_rso_oauth_client(&ctx.env)?.make_signin_link("foobar"))
         })
         .get_async("/signin-rso", signin_rso_get)
+        .options("/user/me", |_, _| Response::empty())
+        .get_async("/user/me", user_me_get)
+        .options("/summoner/update", |_, _| Response::empty())
+        .post_async("/summoner/update", |mut req, ctx| async move {
+            let id: u64 = req.json().await?;
+            let queue = ctx.env.queue("BINDING_QUEUE_WEBJOB").unwrap();
+            queue.send(webjob::Task::SummonerUpdate(id)).await?;
+            Response::empty()
+        })
         .run(req, env)
-        .await
+        .await;
+
+    let mut response = response?;
+    if 302 != response.status_code() {
+        let headers = response.headers_mut();
+        headers.append(
+            "Access-Control-Allow-Origin",
+            pages_origin.as_str().trim_end_matches('/'),
+        )?;
+        headers.append("Access-Control-Allow-Headers", "Authorization")?;
+    }
+    Ok(response)
 }
 
 /// `GET /`
@@ -146,7 +160,7 @@ pub async fn signin_reddit_get(req: Request, ctx: RouteContext<()>) -> Result<Re
     let user_id = create_or_get_db_user(&ctx.env, &reddit_me).await?;
     let user_signin_token = create_session_state_token(&ctx.env, SessionState::Signin { user_id })?;
 
-    let mut url = pages_origin(&ctx.env)?;
+    let mut url = get_pages_origin(&ctx.env)?;
     url.query_pairs_mut()
         .extend_pairs([("token", user_signin_token), ("state", state)]);
     Response::redirect(url)
@@ -171,6 +185,69 @@ pub async fn signin_rso_get(req: Request, ctx: RouteContext<()>) -> Result<Respo
         .handle_callback(req, &ctx)
         .await?;
     Response::from_html(format!("<code>{:#?}</code>", tokens))
+}
+
+/// `GET /user/me`
+pub async fn user_me_get(req: Request, ctx: RouteContext<()>) -> Result<Response> {
+    let session_state = verify_authorization_bearer_token(&ctx.env, &req)?;
+    let SessionState::Session { user_id } = session_state else {
+        return Response::from_json(&"Unauthorized").map(|r| r.with_status(401));
+    };
+
+    let db = ctx.env.d1("BINDING_D1_DB").unwrap();
+    let user_query = query!(
+        &db,
+        "SELECT reddit_user_name, profile_is_public, profile_bgskinid
+        FROM user
+        WHERE id = ?",
+        user_id,
+    )?;
+    let summoners_query = query!(
+        &db,
+        "SELECT id, puuid, platform, game_name, tag_line, last_update, champ_scores
+        FROM summoner
+        WHERE user_id = ?1",
+        user_id,
+    )?;
+
+    let [user_result, summoners_result] = &db.batch(vec![user_query, summoners_query]).await?[..]
+    else {
+        unreachable!();
+    };
+
+    let mut user: User = user_result
+        .results()?
+        .into_iter()
+        .next()
+        .ok_or("User does not exist. This should not happen - invalid session.")?;
+    user.summoners = summoners_result.results()?.into_iter().collect::<Vec<_>>();
+
+    #[serde_as]
+    #[derive(serde::Serialize, serde::Deserialize)]
+    struct User {
+        reddit_user_name: String,
+        #[serde_as(as = "serde_with::BoolFromInt")]
+        profile_is_public: bool,
+        profile_bgskinid: Option<u64>,
+        #[serde(skip_deserializing)]
+        summoners: Vec<Summoner>,
+    }
+    #[serde_as]
+    #[derive(serde::Serialize, serde::Deserialize)]
+    struct Summoner {
+        id: u64,
+        puuid: String,
+        #[serde_as(as = "serde_with::DisplayFromStr")]
+        platform: PlatformRoute,
+        game_name: String,
+        tag_line: String,
+        #[serde_as(as = "Option<crate::with::WebSystemTime<serde_with::TimestampSeconds<i64>>>")]
+        last_update: Option<SystemTime>,
+        #[serde(deserialize_with = "serde_with::As::<Option<serde_with::json::JsonString>>::deserialize")]
+        champ_scores: Option<Vec<ChampScore>>,
+    }
+
+    Response::from_json(&user)
 }
 
 /// `GET /test`
