@@ -1,51 +1,64 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
-  import { replaceState } from '$app/navigation';
+  import { page } from '$app/stores';
+  import { afterNavigate, replaceState } from '$app/navigation';
   import Counter from './Counter.svelte';
 
   const WORKER_ORIGIN = import.meta.env.VITE_WORKER_ORIGIN;
 
-  let signinToken: string | null = null;
-  onMount(async () => {
-    {
-      const session_token = localStorage.getItem('SESSION_TOKEN');
-      if (null != session_token) {
+  async function onSessionChange() {
+    // See if we are signed in.
+    const session_token = localStorage.getItem('SESSION_TOKEN');
+    if (null != session_token) {
+      try {
         const resp = await fetch(`${WORKER_ORIGIN}/user/me`, {
           headers: { Authorization: `Bearer ${session_token}` }
         });
-        let data = await resp.json();
-        console.log(data);
+        if (resp.ok) {
+          userData = await resp.json();
+          return;
+        }
+      } catch (e) {
+        console.error(e);
       }
+      localStorage.removeItem('SESSION_TOKEN');
     }
 
-    const url = new URL(document.location.href);
-    const state = url.searchParams.get('state');
-    const token = url.searchParams.get('token');
-    if (null != state || null != token) {
-      url.search = '';
-      replaceState(url, { sess: { state, token } });
-      return;
-    }
-    if (null != history.state.sess) {
-      const { state, token } = history.state.sess;
-      const oldState = localStorage.getItem('SIGNIN_TOKEN');
-      if (oldState === state) {
-        try {
+    // See if we have a transition token.
+    {
+      const state = $page.url.searchParams.get('state');
+      const token = $page.url.searchParams.get('token');
+      if (null != state || null != token) {
+        const url = new URL($page.url);
+        url.search = '';
+        replaceState(url, {});
+
+        const oldState = localStorage.getItem('ANONYMOUS_TOKEN');
+        localStorage.removeItem('ANONYMOUS_TOKEN');
+        if (oldState === state) {
           const resp = await fetch(`${WORKER_ORIGIN}/signin/upgrade`, {
             headers: { Authorization: `Bearer ${token}` }
           });
-          const finalToken = await resp.json();
-          localStorage.setItem('SESSION_TOKEN', finalToken);
-          return;
-        } catch {
-          localStorage.removeItem('SIGNIN_TOKEN');
+          if (resp.ok) {
+            const sessionToken: string = await resp.json();
+            localStorage.setItem('SESSION_TOKEN', sessionToken);
+            return onSessionChange();
+          }
         }
       }
     }
-    const resp = await fetch(`${WORKER_ORIGIN}/signin/anonymous`);
-    signinToken = await resp.json();
-    localStorage.setItem('SIGNIN_TOKEN', signinToken!);
-  });
+
+    // Get anonymous token.
+    {
+      const resp = await fetch(`${WORKER_ORIGIN}/signin/anonymous`);
+      anonymousToken = await resp.json();
+      localStorage.setItem('ANONYMOUS_TOKEN', anonymousToken!);
+    }
+  }
+
+  let userData: any | null;
+  let anonymousToken: string | null = null;
+
+  afterNavigate(onSessionChange);
 </script>
 
 <svelte:head>
@@ -56,9 +69,12 @@
 <section>
   <Counter />
   <form action={`${WORKER_ORIGIN}/signin/reddit`}>
-    <input type="hidden" name="state" value={signinToken} />
-    <input type="submit" value="Sign In With Reddit" disabled={null == signinToken} />
+    <input type="hidden" name="state" value={anonymousToken} />
+    <input type="submit" value="Sign In With Reddit" disabled={null == anonymousToken} />
   </form>
+  <code>
+    {JSON.stringify(userData, null, 4)}
+  </code>
 </section>
 
 <style>
