@@ -2,6 +2,7 @@
   import { page } from '$app/stores';
   import { afterNavigate, replaceState } from '$app/navigation';
   import Counter from './Counter.svelte';
+    import ChampBadge from './ChampBadge.svelte';
 
   const WORKER_ORIGIN = import.meta.env.VITE_WORKER_ORIGIN;
 
@@ -72,9 +73,15 @@
     <input type="hidden" name="state" value={anonymousToken} />
     <input type="submit" value="Sign In With Reddit" disabled={null == anonymousToken} />
   </form>
-  <code>
-    {JSON.stringify(userData, null, 4)}
-  </code>
+  <div>
+    {#if null != userData}
+      {#each userData.summoners as summoner}
+        {#each summoner.champ_scores as { champion, points, level }}
+          <ChampBadge {champion} {points} {level} />
+        {/each}
+      {/each}
+    {/if}
+  </div>
 </section>
 
 <style>
