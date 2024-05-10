@@ -1,0 +1,16 @@
+[package]
+name = "cm_macro"
+version = "0.0.0"
+authors = ["Mingwei Samuel <mingwei.samuel@gmail.com>"]
+edition = "2021"
+
+[lib]
+proc-macro = true
+
+[features]
+
+[dependencies]
+proc-macro-crate = "3.1.0"
+proc-macro2 = "1.0.82"
+quote = "1.0.36"
+syn = "2.0.61"

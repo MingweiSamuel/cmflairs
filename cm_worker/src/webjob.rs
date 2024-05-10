@@ -9,11 +9,16 @@ use serde_with::json::JsonString;
 use serde_with::ser::SerializeAsWrap;
 use serde_with::{DisplayFromStr, Same, TimestampMilliSeconds};
 use web_time::SystemTime;
-use worker::{query, D1Database, Env, Error, Message, Result};
+use worker::{query, D1Database, Error, Message, Result};
 
-use crate::init::{envvar, get_rgapi};
 use crate::with::{IgnoreKeys, WebSystemTime};
 use crate::ChampScore;
+
+/// Webjob configuration settings, set up in [`crate::init`].
+pub struct WebjobConfig {
+    /// See [`Task::SummonerBulkUpdate`].
+    pub bulk_update_batch_size: u32,
+}
 
 /// Enum of the possible tasks for the RiotApi web job.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -25,20 +30,19 @@ pub enum Task {
 }
 
 /// Handle a `Task`.
-pub async fn handle(env: &Env, msg: Message<Task>) -> Result<Message<Task>> {
-    let rgapi = get_rgapi(&env);
-    let db = env.d1("BINDING_D1_DB").unwrap();
-
+pub async fn handle(
+    db: &D1Database,
+    rgapi: &RiotApi,
+    webjob_config: &WebjobConfig,
+    msg: Message<Task>,
+) -> Result<Message<Task>> {
     match msg.body() {
         &Task::SummonerUpdate(summoner_id) => {
             summoner_update(db, rgapi, summoner_id).await?;
             Result::<Message<_>>::Ok(msg)
         }
         Task::SummonerBulkUpdate => {
-            let batch_size = envvar(env, "WEBJOB_BULK_UPDATE_BATCH_SIZE")?
-                .parse()
-                .map_err(|e| Error::RustError(format!("Env var `WEBJOB_BULK_UPDATE_BATCH_SIZE` should be a positive integer string: {}", e)))?;
-            summoner_bulk_update(db, rgapi, batch_size).await?;
+            summoner_bulk_update(db, rgapi, webjob_config.bulk_update_batch_size).await?;
             Result::<Message<_>>::Ok(msg)
         }
     }
@@ -47,7 +51,7 @@ pub async fn handle(env: &Env, msg: Message<Task>) -> Result<Message<Task>> {
 type Wrap<T, U> = DeserializeAsWrap<T, IgnoreKeys<U>>;
 
 /// Handle [`Task::SummonerBulkUpdate`].
-pub async fn summoner_bulk_update(db: D1Database, rgapi: &RiotApi, batch_size: u32) -> Result<()> {
+pub async fn summoner_bulk_update(db: &D1Database, rgapi: &RiotApi, batch_size: u32) -> Result<()> {
     type SummonerValus = (u64, String, PlatformRoute);
     type SummonerSerde = (Same, Same, DisplayFromStr);
     let query = query!(
@@ -131,7 +135,7 @@ pub async fn summoner_bulk_update(db: D1Database, rgapi: &RiotApi, batch_size: u
 }
 
 /// Handle [`Task::UpdateSummoner`].
-pub async fn summoner_update(db: D1Database, rgapi: &RiotApi, summoner_id: u64) -> Result<()> {
+pub async fn summoner_update(db: &D1Database, rgapi: &RiotApi, summoner_id: u64) -> Result<()> {
     type SummonerValus = (String, PlatformRoute);
     type SummonerSerde = (Same, DisplayFromStr);
     let query = query!(

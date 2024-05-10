@@ -2,6 +2,7 @@
 
 use std::sync::{Once, OnceLock};
 
+use cm_macro::FromRefStatic;
 use hmac::Hmac;
 use riven::reqwest::Client;
 use riven::RiotApi;
@@ -9,9 +10,10 @@ use secrecy::{ExposeSecret, SecretString};
 use sha2::Sha512;
 use url::Url;
 use web_sys::console;
-use worker::{console_error, console_log, Env, Error, Result};
+use worker::{console_error, console_log, D1Database, Env, Error, Result};
 
-use crate::auth::OauthClient;
+use crate::auth::OauthHelper;
+use crate::webjob::WebjobConfig;
 
 /// Initialize [`log`] logging into Cloudflare's [`console`] logging system, if not already
 /// initialized.
@@ -62,102 +64,106 @@ pub fn init_logging() {
     });
 }
 
-/// Initialize and return the [`RiotApi`] instance, if not already initialized.
-pub fn get_rgapi(env: &Env) -> &'static RiotApi {
-    static ONCE: OnceLock<RiotApi> = OnceLock::new();
-    ONCE.get_or_init(|| {
-        let rgapi = RiotApi::new(env.secret("RGAPI_KEY").unwrap().to_string());
-        log::info!("rgapi initialized");
-        rgapi
-    })
+/// `AppState`. Static reference to [`AppStateOwned`] to avoid cloning in Axum.
+pub type AppState = &'static AppStateOwned;
+/// State for the application, used as the Axum router state.
+#[derive(FromRefStatic)]
+pub struct AppStateOwned {
+    /// Database.
+    pub db: D1Database,
+    /// Riot API client.
+    pub riot_api: RiotApi,
+    /// General/Reddit API client.
+    pub reqwest_client: Client,
+    /// Reddit Oauth helper.
+    pub reddit_oauth: RedditOauthHelper,
+    /// RSO Oauth helper.
+    pub rso_oauth: RsoOauthHelper,
+    /// HMAC for signing JWTs.
+    pub jwt_hmac: Hmac<Sha512>,
+    /// Origin (with trailing slash) for `cm_pages` static site.
+    pub cm_pages_origin: CmPagesOrigin,
+    /// See [`crate::webjob::Task::SummonerBulkUpdate`].
+    pub webjob_config: WebjobConfig,
 }
 
-/// Initialize and return the [`RiotApi`] instance, if not already initialized.
-pub fn get_reqwest_client(env: &Env) -> Result<&'static Client> {
-    static ONCE: OnceLock<Result<Client>> = OnceLock::new();
-    ONCE.get_or_init(|| {
-        let user_agent = format!(
-            "cmflairs:{client_id}:{version} (by /u/{reddit_user})",
-            client_id = secret(env, "REDDIT_CLIENT_ID")?.expose_secret(),
-            version = option_env!("GIT_HASH").unwrap_or("localdev"),
-            reddit_user = secret(env, "REDDIT_OWNER_USERNAME")?.expose_secret(),
-        );
-        log::info!(
-            "Initializing reqwest client with user agent: {:?}",
-            user_agent
-        );
-        let client = Client::builder()
-            .user_agent(user_agent)
-            .build()
-            .map_err(|e| format!("Failed to build reqwest client: {}", e))?;
-        Ok(client)
-    })
-    .as_ref()
-    .map_err(|s| Error::RustError(s.to_string()))
-}
-
-/// Gets the [`OauthClient`] for Riot Sign On (RSO).
-pub fn get_rso_oauth_client(env: &Env) -> Result<&'static OauthClient> {
-    static ONCE: OnceLock<Result<OauthClient>> = OnceLock::new();
-    ONCE.get_or_init(|| {
-        let client = OauthClient {
-            client_id: envvar(env, "RSO_CLIENT_ID")?,
-            client_secret: secret(env, "RSO_CLIENT_SECRET")?,
-            provider_authorize_url: envvar(env, "RSO_PROVIDER_AUTHORIZE_URL")?,
-            provider_token_url: envvar(env, "RSO_PROVIDER_TOKEN_URL")?,
-            callback_url: envvar(env, "RSO_CALLBACK_URL")?,
+/// Get the AppState, initializing it if needed.
+pub fn get_appstate(env: &Env) -> worker::Result<AppState> {
+    static ONCE: OnceLock<AppStateOwned> = OnceLock::new();
+    ONCE.get_or_try_init(|| {
+        let db = env.d1("BINDING_D1_DB").unwrap();
+        let riot_api = RiotApi::new(env.secret("RGAPI_KEY").unwrap().to_string());
+        let reqwest_client = {
+            let user_agent = format!(
+                "cmflairs:{client_id}:{version} (by /u/{reddit_user})",
+                client_id = secret(env, "REDDIT_CLIENT_ID")?.expose_secret(),
+                version = option_env!("GIT_HASH").unwrap_or("localdev"),
+                reddit_user = secret(env, "REDDIT_OWNER_USERNAME")?.expose_secret(),
+            );
+            log::info!(
+                "Initializing reqwest client with user agent: {:?}",
+                user_agent
+            );
+            Client::builder()
+                .user_agent(user_agent)
+                .build()
+                .map_err(|e| format!("Failed to build reqwest client: {}", e))?
         };
-        log::info!("Initializing RSO oauth client: {:#?}", client);
-        Ok(client)
-    })
-    .as_ref()
-    .map_err(|s| Error::RustError(s.to_string()))
-}
-
-/// Gets the [`OauthClient`] for Reddit.
-pub fn get_reddit_oauth_client(env: &Env) -> Result<&'static OauthClient> {
-    static ONCE: OnceLock<Result<OauthClient>> = OnceLock::new();
-    ONCE.get_or_init(|| {
-        let client = OauthClient {
+        let reddit_oauth = RedditOauthHelper(OauthHelper {
             client_id: envvar(env, "REDDIT_CLIENT_ID")?,
             client_secret: secret(env, "REDDIT_CLIENT_SECRET")?,
             provider_authorize_url: envvar(env, "REDDIT_PROVIDER_AUTHORIZE_URL")?,
             provider_token_url: envvar(env, "REDDIT_PROVIDER_TOKEN_URL")?,
             callback_url: envvar(env, "REDDIT_CALLBACK_URL")?,
+        });
+        let rso_oauth = RsoOauthHelper(OauthHelper {
+            client_id: envvar(env, "RSO_CLIENT_ID")?,
+            client_secret: secret(env, "RSO_CLIENT_SECRET")?,
+            provider_authorize_url: envvar(env, "RSO_PROVIDER_AUTHORIZE_URL")?,
+            provider_token_url: envvar(env, "RSO_PROVIDER_TOKEN_URL")?,
+            callback_url: envvar(env, "RSO_CALLBACK_URL")?,
+        });
+        let jwt_hmac = {
+            let secret = secret(env, "HMAC_SECRET")?;
+            let secret = base64::decode_config(secret.expose_secret(), base64::URL_SAFE_NO_PAD)
+                .map_err(|e| format!("Failed to decode `HMAC_SECRET`: {}", e))?;
+            if secret.len() < 32 {
+                return Result::Err(Error::RustError(format!(
+                    "`HMAC_SECRET` is too short, len: {}",
+                    secret.len(),
+                )));
+            }
+            hmac::Mac::new_from_slice(&secret)
+                .map_err(|e| format!("Failed to create hmac: {}", e))?
         };
-        log::info!("Initializing Reddit oauth client: {:#?}", client);
-        Ok(client)
+        let cm_pages_origin = CmPagesOrigin(
+            Url::parse(&envvar(env, "PAGES_ORIGIN")?)
+                .map_err(|e| format!("Invalid url in `PAGES_ORIGIN`: {}", e))?,
+        );
+        let webjob_config = WebjobConfig {
+            bulk_update_batch_size: envvar(env, "WEBJOB_BULK_UPDATE_BATCH_SIZE")?
+                .parse()
+                .map_err(|e| Error::RustError(format!("Env var `WEBJOB_BULK_UPDATE_BATCH_SIZE` should be a positive integer string: {}", e)))?,
+        };
+        Ok(AppStateOwned {
+            db,
+            riot_api,
+            reqwest_client,
+            reddit_oauth,
+            rso_oauth,
+            jwt_hmac,
+            cm_pages_origin,
+            webjob_config,
+        })
     })
-    .as_ref()
-    .map_err(|s| Error::RustError(s.to_string()))
 }
 
-/// Gets the HMAC for signing JWTs.
-pub fn get_jwt_hmac(env: &Env) -> Result<&'static Hmac<Sha512>> {
-    static ONCE: OnceLock<Result<Hmac<Sha512>>> = OnceLock::new();
-    ONCE.get_or_init(|| {
-        let secret = secret(env, "HMAC_SECRET")?;
-        let secret = base64::decode_config(secret.expose_secret(), base64::URL_SAFE_NO_PAD)
-            .map_err(|e| format!("Failed to decode `HMAC_SECRET`: {}", e))?;
-        if secret.len() < 32 {
-            return Result::Err(Error::RustError(format!(
-                "`HMAC_SECRET` is too short, len: {}",
-                secret.len(),
-            )));
-        }
-        let hmac = hmac::Mac::new_from_slice(&secret)
-            .map_err(|e| format!("Failed to create hmac: {}", e))?;
-        Ok(hmac)
-    })
-    .as_ref()
-    .map_err(|s| Error::RustError(s.to_string()))
-}
-
-/// Cloudflare pages origin (domain/host/port).
-pub fn get_pages_origin(env: &Env) -> Result<Url> {
-    Ok(Url::parse(&envvar(env, "PAGES_ORIGIN")?)
-        .map_err(|e| format!("Invalid url in `PAGES_ORIGIN`: {}", e))?)
-}
+/// Wraper to distinguish Axum states.
+pub struct RedditOauthHelper(pub OauthHelper);
+/// Wraper to distinguish Axum states.
+pub struct RsoOauthHelper(pub OauthHelper);
+/// Wraper to distinguish Axum states.
+pub struct CmPagesOrigin(pub Url);
 
 /// Get an env var.
 pub fn envvar(env: &Env, name: &str) -> Result<String> {

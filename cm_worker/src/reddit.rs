@@ -1,8 +1,6 @@
 //! Reddit API access.
+use riven::reqwest::Client;
 use serde_with::serde_as;
-use worker::{Env, Result};
-
-use crate::init::get_reqwest_client;
 
 /// GET `/api/v1/me`
 #[serde_as]
@@ -19,16 +17,14 @@ pub struct Me {
 }
 
 /// GET `/api/v1/me`.
-pub async fn get_me(env: &Env, access_token: &str) -> Result<Me> {
-    let reddit_me: Me = get_reqwest_client(env)?
+pub async fn get_me(client: &Client, access_token: &str) -> riven::reqwest::Result<Me> {
+    let reddit_me: Me = client
         .get("https://oauth.reddit.com/api/v1/me")
         .bearer_auth(access_token)
         .send()
         .await
-        .and_then(|r| r.error_for_status())
-        .map_err(|e| format!("Failed to get Reddit identity info from API: {}", e))?
+        .and_then(|r| r.error_for_status())?
         .json()
-        .await
-        .map_err(|e| format!("Failed to get Reddit identity response body: {}", e))?;
+        .await?;
     Ok(reddit_me)
 }

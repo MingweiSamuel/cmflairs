@@ -11,10 +11,20 @@ crate-type = ["rlib", "cdylib"]
 [features]
 
 [dependencies]
+axum = { version = "0.7.5", default-features = false, features = [
+    "json",
+    "query",
+    "macros",
+] }
+axum-extra = { version = "0.9.3", default-features = false, features = [
+    "typed-header",
+] }
 base64 = "0.13.1"
+cm_macro = { path = "../cm_macro" }
 futures = "0.3.30"
 getrandom = { version = "0.2", features = ["js"] }
 hmac = "0.12.1"
+http = "1.1.0"
 itertools = "0.12.1"
 jwt = "0.16.0"
 log = "0.4.21"
@@ -27,8 +37,11 @@ serde = "1.0.200"
 serde_json = "1.0.116"
 serde_with = { version = "3.8.1", features = ["json", "base64"] }
 sha2 = "0.10.8"
+tower = "0.4.13"
+tower-http = { version = "0.5.2", features = ["cors"] }
 url = "2.5.0"
-wasm-bindgen = "0.2" # Cloudflare `worker` pins a specific version.
+wasm-bindgen = "0.2.92"
+wasm-bindgen-futures = "0.4.42"
 web-sys = "0.3.69"
 web-time = "1.1.0"
-worker = { version = "0.2.0", features = ["d1", "queue"] }
+worker = { version = "0.2.0", features = ["axum", "d1", "http", "queue"] }

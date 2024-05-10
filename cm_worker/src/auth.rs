@@ -2,15 +2,23 @@
 
 use std::num::NonZeroU64;
 
+use axum::extract::{FromRef, FromRequestParts};
+use axum::response::{IntoResponse, Response};
+use axum::{async_trait, Json, RequestPartsExt};
+use axum_extra::headers::authorization::Bearer;
+use axum_extra::headers::Authorization;
+use axum_extra::TypedHeader;
+use hmac::Hmac;
+use http::request::Parts;
+use http::StatusCode;
 use jwt::{SignWithKey, VerifyWithKey};
 use rand::{thread_rng, RngCore};
+use riven::reqwest::Client;
 use secrecy::{ExposeSecret, SecretString};
 use serde_with::serde_as;
+use sha2::Sha512;
 use url::Url;
 use web_time::{Duration, SystemTime};
-use worker::{Env, Error, Request, Result, RouteContext};
-
-use crate::init::{get_jwt_hmac, get_reqwest_client};
 
 /// Query `?a=b` data returned to the callback url by the provider after the user authorizes login.
 #[derive(Debug, serde::Deserialize)]
@@ -18,7 +26,7 @@ pub struct OauthCallbackQueryResponse {
     /// Code to post to the provider's token endpoint.
     pub code: String,
     /// Echoed state.
-    pub state: Option<String>,
+    pub state: String,
     /// Issuer.
     pub iss: Option<String>,
 }
@@ -29,7 +37,7 @@ pub struct OauthTokenRequest<'a> {
     /// `"authorization_code"`.
     pub grant_type: &'static str,
     /// Code from the callback.
-    pub code: String,
+    pub code: &'a str,
     /// Redirect for the token request (not useful?).
     pub redirect_uri: &'a str,
 }
@@ -58,7 +66,7 @@ pub struct OauthTokenResponse {
 
 /// Helper for managing oauth authentication.
 #[derive(Debug)]
-pub struct OauthClient {
+pub struct OauthHelper {
     /// Client app's ID.
     pub client_id: String,
     /// Client app's secret.
@@ -70,7 +78,7 @@ pub struct OauthClient {
     /// Client's callback url.
     pub callback_url: String,
 }
-impl OauthClient {
+impl OauthHelper {
     /// Creates the URL for the authorization endpoint.
     pub fn make_signin_link(&self, state: &str) -> Url {
         Url::parse_with_params(
@@ -90,32 +98,21 @@ impl OauthClient {
     /// Handler for the callback at [`Self::callback_url`].
     pub async fn handle_callback(
         &self,
-        req: Request,
-        ctx: &RouteContext<()>,
-    ) -> Result<(OauthTokenResponse, String)> {
-        let callback_data: OauthCallbackQueryResponse = req.query()?;
+        reqwest_client: &Client,
+        jwt_hmac: &Hmac<Sha512>,
+        callback_data: &OauthCallbackQueryResponse,
+    ) -> Result<OauthTokenResponse, AuthError> {
+        let session_state = verify_session_state_token(jwt_hmac, &callback_data.state)?;
+        let SessionState::Anonymous = session_state else {
+            return Err(AuthError::MissingCredentials);
+        };
 
-        let state = callback_data.state.ok_or("Received no echoed `state`.")?;
-        let session_state = verify_session_state_token(&ctx.env, &state)?;
-        let () = matches!(session_state, SessionState::Anonymous)
-            .then_some(())
-            .ok_or("Session state must be ANONYMOUS.")?;
-
-        log::info!(
-            "{:#?}",
-            OauthTokenRequest {
-                grant_type: "authorization_code",
-                code: callback_data.code.clone(),
-                redirect_uri: &self.callback_url,
-            }
-        );
-
-        let request = get_reqwest_client(&ctx.env)?
+        let request = reqwest_client
             .post(&self.provider_token_url)
             .basic_auth(&self.client_id, Some(self.client_secret.expose_secret()))
             .form(&OauthTokenRequest {
                 grant_type: "authorization_code",
-                code: callback_data.code,
+                code: &callback_data.code,
                 redirect_uri: &self.callback_url,
             })
             .build()
@@ -128,23 +125,53 @@ impl OauthClient {
                 .and_then(|b| b.as_bytes())
                 .map(|b| std::str::from_utf8(b))
         );
-        let response = get_reqwest_client(&ctx.env)?.execute(request)
+        let response = reqwest_client
+            .execute(request)
             .await
-            .and_then(|r| r.error_for_status()) // Ensure non-2xx codes error.
-            .map_err(|e| {
-                Error::RustError(format!(
-                    "Request to `{}` failed: {}",
-                    self.provider_token_url, e,
-                ))
-            })?;
+            .and_then(|r| r.error_for_status())
+            .map_err(|e| AuthError::TokenCreation(e.to_string()))?; // Ensure non-2xx codes error.
 
-        let tokens: OauthTokenResponse = response.json().await.map_err(|e| {
-            Error::RustError(format!(
-                "Failed to parse `{}` response: {}",
-                self.provider_token_url, e,
-            ))
-        })?;
-        Ok((tokens, state))
+        Ok(response
+            .json()
+            .await
+            .map_err(|e| AuthError::TokenCreation(e.to_string()))?)
+    }
+}
+
+/// Authorization error.
+#[derive(Debug)]
+pub enum AuthError {
+    /// 401.
+    WrongCredentials,
+    /// 400.
+    MissingCredentials,
+    /// 500.
+    TokenCreation(String),
+    /// 400.
+    InvalidToken,
+    /// 503.
+    UpstreamError,
+}
+
+impl IntoResponse for AuthError {
+    fn into_response(self) -> Response {
+        let (status, error_message) = match self {
+            AuthError::WrongCredentials => (StatusCode::UNAUTHORIZED, "Wrong credentials"),
+            AuthError::MissingCredentials => (StatusCode::BAD_REQUEST, "Missing credentials"),
+            AuthError::TokenCreation(msg) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &*format!("Token creation error: {}", msg),
+            ),
+            AuthError::InvalidToken => (StatusCode::BAD_REQUEST, "Invalid token"),
+            AuthError::UpstreamError => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to communicate with oauth provider",
+            ),
+        };
+        let body = Json(serde_json::json!({
+            "error": error_message,
+        }));
+        (status, body).into_response()
     }
 }
 
@@ -157,16 +184,16 @@ pub enum SessionState {
     Anonymous,
 
     /// Short-lived sign-in token, to be exchanged for a [`Self::Session`] token.
-    #[serde(rename = "SIGNIN")]
-    Signin {
+    #[serde(rename = "TRANSITION")]
+    Transition {
         /// User ID to be signed-in.
         user_id: NonZeroU64,
     },
 
     /// User login session token.
-    #[serde(rename = "SESSION")]
-    Session {
-        /// User ID of signed-in user.
+    #[serde(rename = "SIGNEDIN")]
+    SignedIn {
+        /// User ID this is signed-in.
         user_id: NonZeroU64,
     },
 }
@@ -174,9 +201,116 @@ impl SessionState {
     /// Time to live for each type of session.
     pub fn ttl(self) -> Duration {
         match self {
-            SessionState::Anonymous => Duration::from_secs(24 * 60 * 60),
-            SessionState::Signin { .. } => Duration::from_secs(60),
-            SessionState::Session { .. } => Duration::from_secs(3 * 60 * 60),
+            SessionState::Anonymous { .. } => Duration::from_secs(24 * 60 * 60),
+            SessionState::Transition { .. } => Duration::from_secs(60),
+            SessionState::SignedIn { .. } => Duration::from_secs(3 * 60 * 60),
+        }
+    }
+}
+#[async_trait]
+impl<S> FromRequestParts<S> for SessionState
+where
+    S: Send + Sync,
+    &'static Hmac<Sha512>: FromRef<S>,
+{
+    type Rejection = AuthError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &S,
+    ) -> std::result::Result<Self, Self::Rejection> {
+        // Extract the token from the authorization header
+        let TypedHeader(Authorization(bearer)) = parts
+            .extract::<TypedHeader<Authorization<Bearer>>>()
+            .await
+            .map_err(|_| AuthError::InvalidToken)?;
+        // Decode the user data
+        verify_session_state_token(FromRef::from_ref(state), bearer.token())
+    }
+}
+
+/// [`SessionState::Anonymous`]
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
+pub struct SessionStateAnonymous;
+// TODO: cleanup boilerplate.
+#[async_trait]
+impl<S> FromRequestParts<S> for SessionStateAnonymous
+where
+    S: Send + Sync,
+    &'static Hmac<Sha512>: FromRef<S>,
+{
+    type Rejection = AuthError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &S,
+    ) -> std::result::Result<Self, Self::Rejection> {
+        if let SessionState::Anonymous = SessionState::from_request_parts(parts, state).await? {
+            Ok(SessionStateAnonymous)
+        } else {
+            Err(AuthError::WrongCredentials)
+        }
+    }
+}
+
+/// [`SessionState::Transition`]
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
+#[repr(transparent)]
+pub struct SessionStateTransition {
+    /// User ID to be signed-in.
+    pub user_id: NonZeroU64,
+}
+// TODO: cleanup boilerplate.
+#[async_trait]
+impl<S> FromRequestParts<S> for SessionStateTransition
+where
+    S: Send + Sync,
+    &'static Hmac<Sha512>: FromRef<S>,
+{
+    type Rejection = AuthError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &S,
+    ) -> std::result::Result<Self, Self::Rejection> {
+        if let SessionState::Transition { user_id } =
+            SessionState::from_request_parts(parts, state).await?
+        {
+            Ok(SessionStateTransition { user_id })
+        } else {
+            Err(AuthError::WrongCredentials)
+        }
+    }
+}
+
+/// [`SessionState::SignedIn`]
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
+#[repr(transparent)]
+pub struct SessionStateSignedIn {
+    /// User ID that is signed-in.
+    pub user_id: NonZeroU64,
+}
+// TODO: cleanup boilerplate.
+#[async_trait]
+impl<S> FromRequestParts<S> for SessionStateSignedIn
+where
+    S: Send + Sync,
+    &'static Hmac<Sha512>: FromRef<S>,
+{
+    type Rejection = AuthError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &S,
+    ) -> std::result::Result<Self, Self::Rejection> {
+        if let SessionState::SignedIn { user_id } =
+            SessionState::from_request_parts(parts, state).await?
+        {
+            Ok(SessionStateSignedIn { user_id })
+        } else {
+            Err(AuthError::WrongCredentials)
         }
     }
 }
@@ -217,40 +351,36 @@ impl JwtSessionState {
     }
 
     /// Checks that the token is valid right now.
-    pub fn check_now(&self) -> Result<()> {
+    pub fn check_now(&self) -> Result<(), AuthError> {
         let now = SystemTime::now();
         (self.iat < now && now < self.exp)
             .then_some(())
-            .ok_or("Token is expired.")?;
+            .ok_or(AuthError::WrongCredentials)?;
         Ok(())
     }
 }
 
 /// Create a user session token for the given `user_id`, expiring in some amount of time.
-pub fn create_session_state_token(env: &Env, session_state: SessionState) -> Result<String> {
+pub fn create_session_state_token(
+    jwt_hmac: &Hmac<Sha512>,
+    session_state: SessionState,
+) -> Result<String, AuthError> {
     let claims = JwtSessionState::create_now(session_state);
     let token = claims
-        .sign_with_key(get_jwt_hmac(env)?)
-        .map_err(|e| format!("Failed to sign user session jwt: {}.", e))?;
+        .sign_with_key(jwt_hmac)
+        .map_err(|e| AuthError::TokenCreation(e.to_string()))?;
     Ok(token)
 }
 
 /// Verifies that the session token is valid. Returns the [`SessionState`] if valid, otherwise
 /// returns an error.
-pub fn verify_session_state_token(env: &Env, token: &str) -> Result<SessionState> {
+pub fn verify_session_state_token(
+    jwt_hmac: &Hmac<Sha512>,
+    token: &str,
+) -> Result<SessionState, AuthError> {
     let claims: JwtSessionState = token
-        .verify_with_key(get_jwt_hmac(env)?)
-        .map_err(|e| format!("Failed to read/verify user sesssion jwt: {}.", e))?;
+        .verify_with_key(jwt_hmac)
+        .map_err(|_| AuthError::InvalidToken)?;
     let () = claims.check_now()?;
     Ok(claims.session_state)
-}
-
-/// Verify the `Authorization: Bearer ...` token in the requet.
-pub fn verify_authorization_bearer_token(env: &Env, req: &Request) -> Result<SessionState> {
-    let header = req.headers().get("Authorization")?;
-    let token = header
-        .as_deref()
-        .and_then(|s| s.strip_prefix("Bearer "))
-        .ok_or("Expected `Authorization: Bearer ...` header.")?;
-    verify_session_state_token(env, token)
 }

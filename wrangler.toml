@@ -4,6 +4,7 @@
 name = "cmflairs"
 workers_dev = true
 compatibility_date = "2022-01-20"
+compatibility_flags = ["streams_enable_constructors"]
 main = "cm_worker/build/worker/shim.mjs"
 
 [vars]

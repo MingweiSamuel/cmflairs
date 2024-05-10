@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "cm_macro",
     "cm_worker",
 ]
 resolver = "2"
