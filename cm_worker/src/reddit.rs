@@ -2,7 +2,7 @@
 use serde_with::serde_as;
 use worker::{Env, Result};
 
-use crate::util::get_reqwest_client;
+use crate::init::get_reqwest_client;
 
 /// GET `/api/v1/me`
 #[serde_as]

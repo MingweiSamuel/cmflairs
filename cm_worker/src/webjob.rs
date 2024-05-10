@@ -11,7 +11,7 @@ use serde_with::{DisplayFromStr, Same, TimestampMilliSeconds};
 use web_time::SystemTime;
 use worker::{query, D1Database, Env, Error, Message, Result};
 
-use crate::util::{envvar, get_rgapi};
+use crate::init::{envvar, get_rgapi};
 use crate::with::{IgnoreKeys, WebSystemTime};
 use crate::ChampScore;
 

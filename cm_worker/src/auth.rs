@@ -10,7 +10,7 @@ use url::Url;
 use web_time::{Duration, SystemTime};
 use worker::{Env, Error, Request, Result, RouteContext};
 
-use crate::util::{get_jwt_hmac, get_reqwest_client};
+use crate::init::{get_jwt_hmac, get_reqwest_client};
 
 /// Query `?a=b` data returned to the callback url by the provider after the user authorizes login.
 #[derive(Debug, serde::Deserialize)]

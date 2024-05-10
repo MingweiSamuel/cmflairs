@@ -9,7 +9,7 @@ use riven::consts::{Champion, PlatformRoute, RegionalRoute};
 use serde_with::de::DeserializeAsWrap;
 use serde_with::json::JsonString;
 use serde_with::{serde_as, BoolFromInt, DisplayFromStr, Same, TimestampMilliSeconds};
-use util::{get_reddit_oauth_client, get_rso_oauth_client};
+use init::{get_reddit_oauth_client, get_rso_oauth_client};
 use web_time::SystemTime;
 use worker::{
     event, query, Context, Env, Error, MessageBatch, MessageExt, Request, Response, Result,
@@ -21,13 +21,13 @@ use crate::auth::{
     SessionState,
 };
 use crate::reddit::get_me;
-use crate::util::get_pages_origin;
+use crate::init::get_pages_origin;
 use crate::with::{IgnoreKeys, WebSystemTime};
 
 pub mod auth;
 pub mod base36;
 pub mod reddit;
-pub mod util;
+pub mod init;
 pub mod webjob;
 pub mod with;
 
@@ -41,7 +41,7 @@ pub async fn queue(
     env: Env,
     _ctx: Context,
 ) -> Result<()> {
-    util::init_logging();
+    init::init_logging();
 
     let futures = message_batch.messages()?.into_iter().map(|msg| {
         log::info!("Handling webjob task: `{:?}`.", msg.body());
@@ -63,7 +63,7 @@ pub async fn queue(
 /// Cloudflare fetch request handler.
 #[event(fetch, respond_with_errors)]
 pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
-    util::init_logging();
+    init::init_logging();
 
     #[derive(serde::Serialize, serde::Deserialize)]
     pub struct State {
