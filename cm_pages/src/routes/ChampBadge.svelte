@@ -4,7 +4,7 @@
   export let champion: number = 143;
   export let points: number = 123_456;
   export let level: number = 7;
-  export let name: string = 'Zyra';
+  export let name: string | null = 'Zyra';
 </script>
 
 <div class="champ-badge" title={name}>
@@ -15,7 +15,7 @@
   ></div>
   <div class="circle"></div>
   <div class="mastery" data-mastery={level}></div>
-  <div class="name">{name}</div>
+  <div class="name">{name || '?'}</div>
   <div class="points">{formatter.format(points)}</div>
 </div>
 

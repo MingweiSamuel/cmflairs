@@ -142,7 +142,7 @@ impl OauthHelper {
 #[derive(Debug)]
 pub enum AuthError {
     /// 401.
-    WrongCredentials,
+    Unauthorized(String),
     /// 400.
     MissingCredentials,
     /// 500.
@@ -156,7 +156,9 @@ pub enum AuthError {
 impl IntoResponse for AuthError {
     fn into_response(self) -> Response {
         let (status, error_message) = match self {
-            AuthError::WrongCredentials => (StatusCode::UNAUTHORIZED, "Wrong credentials"),
+            AuthError::Unauthorized(msg) => {
+                (StatusCode::UNAUTHORIZED, &*format!("Unauthorized: {}", msg))
+            }
             AuthError::MissingCredentials => (StatusCode::BAD_REQUEST, "Missing credentials"),
             AuthError::TokenCreation(msg) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -248,7 +250,9 @@ where
         if let SessionState::Anonymous = SessionState::from_request_parts(parts, state).await? {
             Ok(SessionStateAnonymous)
         } else {
-            Err(AuthError::WrongCredentials)
+            Err(AuthError::Unauthorized(
+                "Session state must by anonymous.".to_owned(),
+            ))
         }
     }
 }
@@ -279,7 +283,9 @@ where
         {
             Ok(SessionStateTransition { user_id })
         } else {
-            Err(AuthError::WrongCredentials)
+            Err(AuthError::Unauthorized(
+                "Session state must by transition.".to_owned(),
+            ))
         }
     }
 }
@@ -310,7 +316,9 @@ where
         {
             Ok(SessionStateSignedIn { user_id })
         } else {
-            Err(AuthError::WrongCredentials)
+            Err(AuthError::Unauthorized(
+                "Session state must by signed in.".to_owned(),
+            ))
         }
     }
 }
@@ -325,6 +333,9 @@ pub struct JwtSessionState {
     /// Issued-at time.
     #[serde_as(as = "crate::with::WebSystemTime<serde_with::TimestampSeconds<i64>>")]
     iat: SystemTime,
+    /// Not before time.
+    #[serde_as(as = "crate::with::WebSystemTime<serde_with::TimestampSeconds<i64>>")]
+    nbf: SystemTime,
     /// Expiration time.
     #[serde_as(as = "crate::with::WebSystemTime<serde_with::TimestampSeconds<i64>>")]
     exp: SystemTime,
@@ -337,6 +348,7 @@ impl JwtSessionState {
     /// Sets a random [`Self::nonce`].
     pub fn create_now(session_state: SessionState) -> Self {
         let iat = SystemTime::now();
+        let nbf = iat - Duration::from_secs(10);
         let exp = iat + session_state.ttl();
 
         let mut nonce = [0; 16];
@@ -345,6 +357,7 @@ impl JwtSessionState {
         Self {
             nonce,
             iat,
+            nbf,
             exp,
             session_state,
         }
@@ -353,9 +366,11 @@ impl JwtSessionState {
     /// Checks that the token is valid right now.
     pub fn check_now(&self) -> Result<(), AuthError> {
         let now = SystemTime::now();
-        (self.iat < now && now < self.exp)
-            .then_some(())
-            .ok_or(AuthError::WrongCredentials)?;
+        if now < self.nbf || self.exp < now {
+            return Err(AuthError::Unauthorized(
+                "Token time is invalid (expired).".to_owned(),
+            ));
+        }
         Ok(())
     }
 }

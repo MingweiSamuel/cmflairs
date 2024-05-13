@@ -10,7 +10,7 @@ use secrecy::{ExposeSecret, SecretString};
 use sha2::Sha512;
 use url::Url;
 use web_sys::console;
-use worker::{console_error, console_log, D1Database, Env, Error, Result};
+use worker::{console_error, console_log, D1Database, Env, Error, Queue, Result};
 
 use crate::auth::OauthHelper;
 use crate::webjob::WebjobConfig;
@@ -71,6 +71,8 @@ pub type AppState = &'static AppStateOwned;
 pub struct AppStateOwned {
     /// Database.
     pub db: D1Database,
+    /// Webjob queue.
+    pub webjob_queue: Queue,
     /// Riot API client.
     pub riot_api: RiotApi,
     /// General/Reddit API client.
@@ -92,6 +94,7 @@ pub fn get_appstate(env: &Env) -> worker::Result<AppState> {
     static ONCE: OnceLock<AppStateOwned> = OnceLock::new();
     ONCE.get_or_try_init(|| {
         let db = env.d1("BINDING_D1_DB").unwrap();
+        let webjob_queue = env.queue("BINDING_QUEUE_WEBJOB").unwrap();
         let riot_api = RiotApi::new(env.secret("RGAPI_KEY").unwrap().to_string());
         let reqwest_client = {
             let user_agent = format!(
@@ -147,6 +150,7 @@ pub fn get_appstate(env: &Env) -> worker::Result<AppState> {
         };
         Ok(AppStateOwned {
             db,
+            webjob_queue,
             riot_api,
             reqwest_client,
             reddit_oauth,

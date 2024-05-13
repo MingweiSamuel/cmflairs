@@ -8,27 +8,32 @@ use std::num::NonZeroU64;
 
 use auth::{AuthError, OauthCallbackQueryResponse, SessionStateSignedIn, SessionStateTransition};
 pub use axum;
-use axum::extract::{Query, State};
+use axum::extract::{Path, Query, State};
 use axum::response::Redirect;
 use axum::{routing, Json};
 use cm_macro::local_async;
 use futures::future::join_all;
 use hmac::Hmac;
 use http::header::AUTHORIZATION;
+use http::status::StatusCode;
 use http::HeaderValue;
 use init::{CmPagesOrigin, RedditOauthHelper, RsoOauthHelper};
 use riven::consts::{Champion, PlatformRoute, RegionalRoute};
 use riven::reqwest::Client;
+use serde::Serialize;
 use serde_with::de::DeserializeAsWrap;
 use serde_with::{serde_as, Same};
 use sha2::Sha512;
 use tower::Service;
-use tower_http::cors::CorsLayer;
-use web_time::SystemTime;
-use worker::{event, query, Context, D1Database, Env, Error, MessageBatch, MessageExt, Result};
+use tower_http::cors::{CorsLayer, MaxAge};
+use web_time::{Duration, SystemTime};
+use worker::{
+    event, query, Context, D1Database, Env, Error, MessageBatch, MessageExt, Queue, Result,
+};
 
 use crate::auth::{create_session_state_token, SessionState};
 use crate::error::CmError;
+use crate::webjob::Task;
 use crate::with::IgnoreKeys;
 
 pub mod auth;
@@ -115,6 +120,7 @@ pub async fn fetch(
         )
         .route("/signin-reddit", routing::get(get_signin_reddit))
         .route("/user/me", routing::get(get_user_me))
+        .route("/summoner/:sid/update", routing::post(post_summoner_update))
         .layer(
             CorsLayer::new()
                 .allow_origin(
@@ -123,7 +129,8 @@ pub async fn fetch(
                     )
                     .unwrap(),
                 )
-                .allow_headers([AUTHORIZATION]),
+                .allow_headers([AUTHORIZATION])
+                .max_age(MaxAge::exact(Duration::from_secs(3600))),
         )
         .with_state(app_state);
 
@@ -191,48 +198,25 @@ pub async fn get_signin_reddit(
     Ok(Redirect::temporary(url.as_str()))
 }
 
-// /// `GET /signin-rso`
-// pub async fn signin_rso_get(req: Request, ctx: RouteContext<()>) -> Result<Response> {
-//     let tokens = get_rso_oauth_client(&ctx.env)?
-//         .handle_callback(req, &ctx)
-//         .await?;
-//     Response::from_html(format!("<code>{:#?}</code>", tokens))
-// }
-
-#[serde_as]
-#[derive(serde::Serialize, serde::Deserialize)]
-struct User {
-    reddit_user_name: String,
-    #[serde_as(as = "serde_with::BoolFromInt")]
-    profile_is_public: bool,
-    profile_bgskinid: Option<u64>,
-    #[serde(skip_deserializing)]
-    summoners: Vec<Summoner>,
-}
-#[serde_as]
-#[derive(serde::Serialize, serde::Deserialize)]
-struct Summoner {
-    id: u64,
-    puuid: String,
-    #[serde_as(as = "serde_with::DisplayFromStr")]
-    platform: PlatformRoute,
-    game_name: String,
-    tag_line: String,
-    #[serde_as(as = "Option<crate::with::WebSystemTime<serde_with::TimestampSeconds<i64>>>")]
-    last_update: Option<SystemTime>,
-    #[serde(
-        deserialize_with = "serde_with::As::<Option<serde_with::json::JsonString>>::deserialize"
-    )]
-    champ_scores: Option<Vec<ChampScore>>,
-}
-
 /// `GET /user/me`
 #[axum::debug_handler(state = init::AppState)]
 #[local_async]
 pub async fn get_user_me(
     State(db): State<&'static D1Database>,
     SessionStateSignedIn { user_id }: SessionStateSignedIn,
-) -> std::result::Result<Json<User>, CmError> {
+) -> std::result::Result<Json<impl Serialize>, CmError> {
+    #[serde_as]
+    #[derive(serde::Serialize, serde::Deserialize)]
+    struct User {
+        reddit_user_name: String,
+        #[serde_as(as = "serde_with::BoolFromInt")]
+        profile_is_public: bool,
+        profile_bgskinid: Option<u64>,
+        #[serde(skip_deserializing)]
+        summoners: Vec<Summoner>,
+        #[serde(skip_deserializing)]
+        champs: Vec<Champ>,
+    }
     let user_query = query!(
         &db,
         "SELECT reddit_user_name, profile_is_public, profile_bgskinid
@@ -240,15 +224,48 @@ pub async fn get_user_me(
         WHERE id = ?",
         user_id,
     )?;
+    #[serde_as]
+    #[derive(serde::Serialize, serde::Deserialize)]
+    struct Summoner {
+        id: u64,
+        puuid: String,
+        #[serde_as(as = "serde_with::DisplayFromStr")]
+        platform: PlatformRoute,
+        game_name: String,
+        tag_line: String,
+        #[serde_as(as = "Option<crate::with::WebSystemTime<serde_with::TimestampSeconds<i64>>>")]
+        last_update: Option<SystemTime>,
+    }
     let summoners_query = query!(
         &db,
-        "SELECT id, puuid, platform, game_name, tag_line, last_update, champ_scores
+        "SELECT id, puuid, platform, game_name, tag_line, last_update
         FROM summoner
-        WHERE user_id = ?1",
+        WHERE user_id = ?",
+        user_id,
+    )?;
+    #[serde_as]
+    #[derive(serde::Serialize, serde::Deserialize)]
+    struct Champ {
+        champ_id: Champion,
+        total_points: u64,
+        max_level: u64,
+        #[serde(skip_deserializing)]
+        name: Option<&'static str>,
+    }
+    let champs_query = query!(
+        &db,
+        "SELECT champ_id, SUM(points) AS total_points, MAX(level) AS max_level
+        FROM summoner_champion_mastery cm
+        JOIN summoner s ON s.id = cm.summoner_id
+        WHERE s.user_id = ?
+        GROUP BY champ_id
+        ORDER BY total_points DESC",
         user_id,
     )?;
 
-    let [user_result, summoners_result] = &db.batch(vec![user_query, summoners_query]).await?[..]
+    let [user_result, summoners_result, champs_result] = &db
+        .batch(vec![user_query, summoners_query, champs_query])
+        .await?[..]
     else {
         unreachable!();
     };
@@ -259,81 +276,28 @@ pub async fn get_user_me(
             user_id
         ))
     })?;
-    user.summoners = summoners_result.results()?.into_iter().collect::<Vec<_>>();
+    user.summoners = summoners_result.results()?;
+    user.champs = champs_result.results()?;
+    // Add `name` to each champ
+    for champ in user.champs.iter_mut() {
+        champ.name = champ.champ_id.name();
+    }
     Ok(Json(user))
 }
 
-// /// `GET /test`
-// pub async fn test_get(_req: Request, ctx: RouteContext<()>) -> Result<Response> {
-//     let queue = ctx.env.queue("BINDING_QUEUE_WEBJOB").unwrap();
-//     queue.send(webjob::Task::SummonerBulkUpdate).await?;
-
-//     let db = ctx.env.d1("BINDING_D1_DB").unwrap();
-
-//     type UserWrap = DeserializeAsWrap<
-//         (u64, String, bool, Option<u64>),
-//         IgnoreKeys<(Same, Same, BoolFromInt, Same)>,
-//     >;
-//     let query = query!(
-//         &db,
-//         "SELECT id, reddit_user_name, profile_is_public, profile_bgskinid FROM user"
-//     );
-//     let response1 = query
-//         .all()
-//         .await?
-//         .results()?
-//         .into_iter()
-//         .map(UserWrap::into_inner)
-//         .collect::<Vec<_>>();
-
-//     let mut summoners = Vec::new();
-//     for &(id, ..) in response1.iter() {
-//         type SummonerWrap = DeserializeAsWrap<
-//             (
-//                 u64,
-//                 u64,
-//                 String,
-//                 PlatformRoute,
-//                 String,
-//                 String,
-//                 Option<SystemTime>,
-//                 Option<Vec<ChampScore>>,
-//             ),
-//             IgnoreKeys<(
-//                 Same,
-//                 Same,
-//                 Same,
-//                 DisplayFromStr,
-//                 Same,
-//                 Same,
-//                 Option<WebSystemTime<TimestampMilliSeconds<i64>>>,
-//                 Option<JsonString>,
-//             )>,
-//         >;
-//         let query = query!(&db, "SELECT id, user_id, puuid, platform, game_name, tag_line, last_update, champ_scores FROM summoner WHERE user_id = ?1", id)?;
-//         summoners.push(
-//             query
-//                 .all()
-//                 .await?
-//                 .results()?
-//                 .into_iter()
-//                 .map(SummonerWrap::into_inner)
-//                 .collect::<Vec<_>>(),
-//         );
-//     }
-
-//     Response::ok(format!("{:#?}\n\n{:#?}", response1, summoners))
-// }
-
-/// Per-champion mastery info.
-#[derive(Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct ChampScore {
-    /// Which champion.
-    pub champion: Champion,
-    /// How many mastery points earned.
-    pub points: i32,
-    /// What level (up to 7).
-    pub level: i32,
+/// `POST /summoner/:sid/update`
+#[axum::debug_handler(state = init::AppState)]
+#[local_async]
+pub async fn post_summoner_update(
+    State(webjob_queue): State<&'static Queue>,
+    Path(sid): Path<u64>,
+    SessionStateSignedIn { user_id }: SessionStateSignedIn,
+) -> std::result::Result<StatusCode, CmError> {
+    // TODO(mingwei): validate that summoner belongs to user?
+    // TODO(mingwei): validate that summoner hasn't been updated recently?
+    let _ = user_id;
+    webjob_queue.send(Task::SummonerUpdate(sid)).await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 // TODO: update return Result type.
@@ -350,7 +314,7 @@ pub async fn create_or_get_db_user(db: &D1Database, reddit_me: &reddit::Me) -> R
         &db,
         "INSERT INTO user(reddit_id, reddit_user_name, profile_is_public)
         VALUES (?, ?, 0)
-        ON CONFLICT DO UPDATE SET id=id RETURNING id",
+        ON CONFLICT DO UPDATE SET id=id RETURNING id", // Could use EXCLUDED.id?
         reddit_me.id,
         reddit_me.name,
     )?;

@@ -48,4 +48,4 @@ queue = "dev-webjob"
 [[d1_databases]]
 binding = "BINDING_D1_DB"
 database_name = "dev-db"
-database_id = "376c4d7a-4b79-4373-b357-72c915cd0895"
+database_id = "e1437a70-78dc-4f01-820b-f6f7e7615bf4"

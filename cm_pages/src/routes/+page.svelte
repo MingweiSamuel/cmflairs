@@ -1,8 +1,7 @@
 <script lang="ts">
   import { page } from '$app/stores';
   import { afterNavigate, replaceState } from '$app/navigation';
-  import Counter from './Counter.svelte';
-    import ChampBadge from './ChampBadge.svelte';
+  import ChampBadge from './ChampBadge.svelte';
 
   const WORKER_ORIGIN = import.meta.env.VITE_WORKER_ORIGIN;
 
@@ -56,6 +55,17 @@
     }
   }
 
+  async function updateSummoner(sid: number): Promise<boolean> {
+    const sessionToken = localStorage.getItem('SESSION_TOKEN');
+    const resp = await fetch(`${WORKER_ORIGIN}/summoner/${sid}/update`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${sessionToken}`
+      }
+    });
+    return resp.ok;
+  }
+
   let userData: any | null;
   let anonymousToken: string | null = null;
 
@@ -68,20 +78,23 @@
 </svelte:head>
 
 <section>
-  <Counter />
   <form action={`${WORKER_ORIGIN}/signin/reddit`}>
     <input type="hidden" name="state" value={anonymousToken} />
     <input type="submit" value="Sign In With Reddit" disabled={null == anonymousToken} />
   </form>
-  <div>
-    {#if null != userData}
-      {#each userData.summoners as summoner}
-        {#each summoner.champ_scores as { champion, points, level }}
-          <ChampBadge {champion} {points} {level} />
-        {/each}
+  {#if null != userData}
+    <div style="width: 100px;">
+      {#each userData.champs as { champ_id, total_points, max_level, name }}
+        <ChampBadge champion={champ_id} points={total_points} level={max_level} {name} />
       {/each}
-    {/if}
-  </div>
+    </div>
+    {#each userData.summoners as summoner}
+      <div>
+        {summoner.game_name}#{summoner.tag_line} ({summoner.platform})
+        <button on:click={() => updateSummoner(summoner.id)}> Update </button>
+      </div>
+    {/each}
+  {/if}
 </section>
 
 <style>

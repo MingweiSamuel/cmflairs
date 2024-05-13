@@ -31,7 +31,6 @@ CREATE TABLE IF NOT EXISTS summoner (
     tag_line TEXT NOT NULL,
     platform TEXT NOT NULL,
     last_update INTEGER,
-    champ_scores TEXT,
     FOREIGN KEY(user_id) REFERENCES user(id)
 );
 
@@ -51,3 +50,13 @@ VALUES
         '000',
         'NA1'
     );
+
+CREATE TABLE IF NOT EXISTS summoner_champion_mastery (
+    id INTEGER PRIMARY KEY,
+    summoner_id INTEGER NOT NULL,
+    champ_id INTEGER NOT NULL,
+    points INTEGER NOT NULL,
+    level INTEGER NOT NULL,
+    FOREIGN KEY(summoner_id) REFERENCES summoner(id),
+    UNIQUE(summoner_id, champ_id)
+);
